@@ -1,0 +1,13 @@
+# Go build and test output
+/DistributedZKRuntime
+/DistributedZKRuntime.exe
+*.test
+*.test.exe
+/coverage.out
+/coverage.html
+
+# Local editor and OS files
+/.vscode/
+/.idea/
+.DS_Store
+Thumbs.db
