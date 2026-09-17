@@ -1,0 +1,28 @@
+{
+  "editor.fontFamily": "'Victor Mono', Consolas, monospace",
+  "editor.fontSize": 16,
+  "editor.lineHeight": 22,
+  "editor.fontWeight": "500",
+  "editor.letterSpacing": 0.2,
+  "editor.fontLigatures": true,
+  "editor.padding.top": 4,
+  "editor.padding.bottom": 4,
+  "editor.tokenColorCustomizations": {
+    "textMateRules": [
+      {
+        "scope": [
+          "comment",
+          "punctuation.definition.comment"
+        ],
+        "settings": {
+          "fontStyle": "italic"
+        }
+      }
+    ]
+  },
+  "[go]": {
+    "editor.detectIndentation": false,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": false
+  }
+}
