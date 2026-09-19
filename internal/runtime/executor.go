@@ -1,4 +1,4 @@
-package main
+package runtime
 
 import (
 	"context"
@@ -53,7 +53,8 @@ func NewExecutor(workerCount int, queueSize int) *Executor {
 	return e
 }
 
-func executeJob(ctx context.Context, job Job) Result {
+// ExecuteJob executes a task and maps its output and error to a job result.
+func ExecuteJob(ctx context.Context, job Job) Result {
 	output, err := job.Task.Execute(ctx)
 
 	if err != nil {
@@ -150,7 +151,7 @@ func (e *Executor) worker(id int) {
 			}
 
 			jobCtx, cancel := context.WithTimeout(e.ctx, job.Timeout)
-			result := executeJob(jobCtx, job)
+			result := ExecuteJob(jobCtx, job)
 			cancel()
 
 			if err := e.updateJobStatus(job.ID, result.Status); err != nil {

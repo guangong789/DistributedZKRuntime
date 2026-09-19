@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package runtime;
+
+option go_package = "github.com/guangong789/DistributedZKRuntime/proto;runtimepb";
+
+service WorkerService {
+  rpc ExecuteJob(ExecuteJobRequest) returns (ExecuteJobResponse);
+}
+
+message ExecuteJobRequest {
+  int64 job_id = 1;
+  string task_type = 2;
+  string payload = 3;
+  int64 timeout_ms = 4;
+
+  int64 attempt_id = 5;
+}
+
+message ExecuteJobResponse {
+  int64 job_id = 1;
+  string status = 2;
+  string output = 3;
+  string error = 4;
+
+  int64 attempt_id = 5;
+}
+
+service CoordinatorService {
+    rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+
+    rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message RegisterWorkerRequest {
+    string worker_id = 1;
+    string address = 2;
+}
+
+message RegisterWorkerResponse {
+    bool accepted = 1;
+    string error = 2;
+}
+
+message SubmitJobRequest {
+  int64 job_id = 1;
+  string task_type = 2;
+  string payload = 3;
+  int64 timeout_ms = 4;
+}
+
+message SubmitJobResponse {
+  int64 job_id = 1;
+  string status = 2;
+  string output = 3;
+  string error = 4;
+  int64 attempt_id = 5;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
+}

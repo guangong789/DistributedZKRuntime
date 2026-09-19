@@ -1,6 +1,12 @@
 # Go build and test output
 /DistributedZKRuntime
 /DistributedZKRuntime.exe
+/client
+/client.exe
+/coordinator
+/coordinator.exe
+/worker
+/worker.exe
 *.test
 *.test.exe
 /coverage.out
