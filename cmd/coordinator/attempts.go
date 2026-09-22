@@ -1,6 +1,8 @@
 package main
 
-import "time"
+import (
+	"time"
+)
 
 type JobAttempt struct {
 	JobID     int64
@@ -96,4 +98,27 @@ func (s *CoordinatorServer) isLeaseCurrent(
 	}
 
 	return time.Now().Before(lease.ExpiresAt)
+}
+
+func (s *CoordinatorServer) claimJob(jobID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.activeJobs == nil {
+		s.activeJobs = make(map[int64]struct{})
+	}
+
+	if _, exists := s.activeJobs[jobID]; exists {
+		return false
+	}
+
+	s.activeJobs[jobID] = struct{}{}
+	return true
+}
+
+func (s *CoordinatorServer) releaseJob(jobID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.activeJobs, jobID)
 }

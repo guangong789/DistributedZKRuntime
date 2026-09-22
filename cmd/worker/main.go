@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -141,6 +142,7 @@ func registerWithCoordinator(
 
 func runHeartbeat(
 	workerID string,
+	workerAddress string,
 	coordinatorAddress string,
 ) {
 	conn, err := grpc.NewClient(
@@ -166,21 +168,11 @@ func runHeartbeat(
 			500*time.Millisecond,
 		)
 
-		resp, err := client.Heartbeat(
-			ctx,
-			&runtimepb.HeartbeatRequest{
-				WorkerId: workerID,
-			},
-		)
-
+		err := workerheartbeat.Send(ctx, client, workerID, workerAddress)
 		cancel()
 
 		if err != nil {
 			log.Println("heartbeat failed:", err)
-			continue
-		}
-		if !resp.Accepted {
-			log.Println("heartbeat rejected")
 			continue
 		}
 
@@ -229,6 +221,7 @@ func main() {
 
 	go runHeartbeat(
 		*workerID,
+		*advertiseAddress,
 		*coordinatorAddress,
 	)
 
