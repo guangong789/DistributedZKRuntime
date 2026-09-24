@@ -4,12 +4,6 @@ import (
 	"time"
 )
 
-type JobAttempt struct {
-	JobID     int64
-	AttemptID int64
-	WorkerID  string
-}
-
 type JobLease struct {
 	JobID     int64
 	AttemptID int64
@@ -17,18 +11,62 @@ type JobLease struct {
 	ExpiresAt time.Time
 }
 
-// startAttempt allocates the ID and publishes its lease atomically.
-func (s *CoordinatorServer) startAttempt(jobID int64, workerID string, duration time.Duration) int64 {
+// startAttempt persists the next ID before publishing it and its lease under s.mu.
+func (s *CoordinatorServer) startAttempt(
+	jobID int64,
+	workerID string,
+	duration time.Duration,
+) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.jobAttempts == nil {
 		s.jobAttempts = make(map[int64]int64)
 	}
-	next := s.jobAttempts[jobID] + 1
+
+	var persistedAttempt int64
+
+	if s.jobStore != nil {
+		record, ok, err := s.jobStore.Load(jobID)
+		if err != nil {
+			return 0, err
+		}
+
+		if ok {
+			persistedAttempt = record.AttemptID
+		}
+	}
+
+	baseAttempt := s.jobAttempts[jobID]
+
+	if persistedAttempt > baseAttempt {
+		baseAttempt = persistedAttempt
+	}
+
+	next := baseAttempt + 1
+
+	record := JobRecord{
+		JobID:     jobID,
+		State:     JobRunning,
+		AttemptID: next,
+		WorkerID:  workerID,
+	}
+
+	if s.jobStore != nil {
+		if err := s.jobStore.Save(record); err != nil {
+			return 0, err
+		}
+	}
+
 	s.jobAttempts[jobID] = next
-	s.setLeaseLocked(jobID, next, workerID, duration)
-	return next
+	s.setLeaseLocked(
+		jobID,
+		next,
+		workerID,
+		duration,
+	)
+
+	return next, nil
 }
 
 func (s *CoordinatorServer) setLease(

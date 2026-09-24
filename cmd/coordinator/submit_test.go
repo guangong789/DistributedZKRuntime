@@ -44,10 +44,14 @@ func successfulResult(req *runtimepb.ExecuteJobRequest) *runtimepb.ExecuteJobRes
 	return &runtimepb.ExecuteJobResponse{JobId: req.JobId, AttemptId: req.AttemptId, Status: "Succeeded", Output: "done"}
 }
 
+func newTestCoordinator() *CoordinatorServer {
+	return &CoordinatorServer{jobStore: NewMemoryJobStore()}
+}
+
 func TestSubmitRetryAndFencing(t *testing.T) {
 	for _, scenario := range []string{"success", "task failure", "rpc failure", "worker canceled", "wrong job", "wrong attempt", "expired lease", "superseded attempt", "exhausted retries"} {
 		t.Run(scenario, func(t *testing.T) {
-			s := &CoordinatorServer{}
+			s := newTestCoordinator()
 			var firstCalls, secondCalls atomic.Int32
 			registerTestWorker(t, s, "first", func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 				firstCalls.Add(1)
@@ -74,7 +78,9 @@ func TestSubmitRetryAndFencing(t *testing.T) {
 				case "expired lease":
 					s.setLease(req.JobId, req.AttemptId, "first", -time.Second)
 				case "superseded attempt":
-					s.startAttempt(req.JobId, "other", time.Minute)
+					if _, err := s.startAttempt(req.JobId, "other", time.Minute); err != nil {
+						t.Errorf("start superseding attempt: %v", err)
+					}
 				}
 				return resp, nil
 			})
@@ -135,7 +141,7 @@ func TestSubmitRetryAndFencing(t *testing.T) {
 
 func TestSubmitCanceledParentDoesNotDispatch(t *testing.T) {
 	for _, expired := range []bool{false, true} {
-		s := &CoordinatorServer{}
+		s := newTestCoordinator()
 		var calls atomic.Int32
 		registerTestWorker(t, s, "worker", func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 			calls.Add(1)
@@ -159,7 +165,7 @@ func TestSubmitCanceledParentDoesNotDispatch(t *testing.T) {
 }
 
 func TestSubmitCancellationDuringRPCDoesNotRetry(t *testing.T) {
-	s := &CoordinatorServer{}
+	s := newTestCoordinator()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	workerDone := make(chan struct{})
@@ -198,7 +204,8 @@ func TestSubmitCancellationDuringRPCDoesNotRetry(t *testing.T) {
 }
 
 func TestSubmitLeaseExpiryRetriesWithLiveParent(t *testing.T) {
-	s := &CoordinatorServer{leaseDuration: 100 * time.Millisecond}
+	s := newTestCoordinator()
+	s.leaseDuration = 100 * time.Millisecond
 	parentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -356,21 +363,30 @@ func TestSubmitNoAliveWorkers(t *testing.T) {
 }
 
 func TestConcurrentAttemptAllocation(t *testing.T) {
-	s := &CoordinatorServer{}
+	s := newTestCoordinator()
 	const count = 100
-	ids := make(chan int64, count)
+	type attemptResult struct {
+		id  int64
+		err error
+	}
+	results := make(chan attemptResult, count)
 	var wg sync.WaitGroup
 	for i := 0; i < count; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ids <- s.startAttempt(500, "worker", time.Minute)
+			id, err := s.startAttempt(500, "worker", time.Minute)
+			results <- attemptResult{id: id, err: err}
 		}()
 	}
 	wg.Wait()
-	close(ids)
+	close(results)
 	seen := make(map[int64]bool)
-	for id := range ids {
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("start attempt: %v", result.err)
+		}
+		id := result.id
 		if id < 1 || id > count || seen[id] {
 			t.Fatalf("invalid or duplicate attempt: %d", id)
 		}
@@ -380,13 +396,17 @@ func TestConcurrentAttemptAllocation(t *testing.T) {
 	if !ok || lease.AttemptID != count || !s.isLeaseCurrent(500, count) || s.isLeaseCurrent(500, count-1) {
 		t.Fatalf("latest attempt and lease diverged: %+v", lease)
 	}
-	if next := s.startAttempt(501, "worker", time.Minute); next != 1 {
+	next, err := s.startAttempt(501, "worker", time.Minute)
+	if err != nil {
+		t.Fatalf("start attempt for second job: %v", err)
+	}
+	if next != 1 {
 		t.Fatalf("attempt IDs are not per-job: %d", next)
 	}
 }
 
 func TestLeaseExpiryBoundaryAndMissingLease(t *testing.T) {
-	s := &CoordinatorServer{}
+	s := newTestCoordinator()
 	if s.leaseExpired(1, time.Now()) || s.isLeaseCurrent(1, 1) {
 		t.Fatal("missing lease reported expired or current")
 	}
@@ -398,7 +418,7 @@ func TestLeaseExpiryBoundaryAndMissingLease(t *testing.T) {
 }
 
 func TestRetrySkipsDeadWorker(t *testing.T) {
-	s := &CoordinatorServer{}
+	s := newTestCoordinator()
 	registerTestWorker(t, s, "first", func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 		return nil, status.Error(codes.Unavailable, "worker unavailable")
 	})
@@ -513,6 +533,7 @@ func TestLateSuccessfulAttemptCannotReplaceAcceptedRetry(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int32
 	s := &CoordinatorServer{
 		leaseDuration: 100 * time.Millisecond,
+		jobStore:      NewMemoryJobStore(),
 		onDispatchDone: func(jobID, attemptID int64) {
 			if jobID != 500 {
 				t.Errorf("unexpected dispatch job: %d", jobID)
@@ -640,11 +661,17 @@ func TestLateSuccessfulAttemptCannotReplaceAcceptedRetry(t *testing.T) {
 }
 
 func TestSupersededSuccessFailsFencingBeforeOldLeaseExpires(t *testing.T) {
-	s := &CoordinatorServer{}
-	first := s.startAttempt(500, "first", time.Hour)
+	s := newTestCoordinator()
+	first, err := s.startAttempt(500, "first", time.Hour)
+	if err != nil {
+		t.Fatalf("start first attempt: %v", err)
+	}
 	oldLease, _ := s.getLease(500)
 	late := successfulResult(&runtimepb.ExecuteJobRequest{JobId: 500, AttemptId: first})
-	second := s.startAttempt(500, "second", time.Hour)
+	second, err := s.startAttempt(500, "second", time.Hour)
+	if err != nil {
+		t.Fatalf("start second attempt: %v", err)
+	}
 	if first != 1 || second != 2 {
 		t.Fatalf("attempt IDs: first=%d second=%d", first, second)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -18,7 +19,7 @@ import (
 type CoordinatorServer struct {
 	runtimepb.UnimplementedCoordinatorServiceServer
 
-	// mu protects the worker registry, round-robin cursor, attempts, and leases.
+	// mu protects the worker registry, round-robin cursor, attempts, leases, and active jobs.
 	mu          sync.Mutex
 	workers     map[string]WorkerInfo
 	workerOrder []string
@@ -31,10 +32,11 @@ type CoordinatorServer struct {
 
 	// Set before serving requests; non-positive values use the 5-second default.
 	leaseDuration time.Duration
-
 	// Optional completion observer, called after dispatch publishes its result.
 	// Configure before serving; callbacks may run concurrently.
 	onDispatchDone func(jobID, attemptID int64)
+
+	jobStore JobStore
 }
 
 type dispatchResult struct {
@@ -99,7 +101,16 @@ func (s *CoordinatorServer) SubmitJob(
 			break
 		}
 
-		attemptID := s.startAttempt(req.JobId, worker.ID, leaseDuration)
+		attemptID, err := s.startAttempt(req.JobId, worker.ID, leaseDuration)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"failed to start attempt for job %d: %v",
+				req.JobId,
+				err,
+			)
+		}
+
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		resultCh := make(chan dispatchResult, 1)
 
@@ -163,6 +174,36 @@ func (s *CoordinatorServer) SubmitJob(
 				continue
 			}
 
+			finalState, err := jobStateFromStatus(resp.Status)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.Internal,
+					"invalid worker status for job %d attempt %d: %v",
+					req.JobId,
+					attemptID,
+					err,
+				)
+			}
+
+			record := JobRecord{
+				JobID:     req.JobId,
+				State:     finalState,
+				AttemptID: attemptID,
+				WorkerID:  worker.ID,
+			}
+
+			if s.jobStore != nil {
+				if err := s.jobStore.Save(record); err != nil {
+					return nil, status.Errorf(
+						codes.Internal,
+						"failed to persist final state for job %d attempt %d: %v",
+						req.JobId,
+						attemptID,
+						err,
+					)
+				}
+			}
+
 			return &runtimepb.SubmitJobResponse{
 				JobId:     resp.JobId,
 				Status:    resp.Status,
@@ -214,10 +255,27 @@ func main() {
 
 	server := grpc.NewServer()
 
+	dbPath := flag.String(
+		"db",
+		"runtime.db",
+		"path to coordinator SQLite database",
+	)
+
+	flag.Parse()
+
+	store, err := NewSQLiteJobStore(*dbPath)
+	if err != nil {
+		log.Fatalf("failed to open job store: %v", err)
+	}
+	defer store.Close()
+
 	coordinator := &CoordinatorServer{
-		workers:     make(map[string]WorkerInfo),
-		jobAttempts: make(map[int64]int64),
-		leases:      make(map[int64]JobLease),
+		workers:       make(map[string]WorkerInfo),
+		jobAttempts:   make(map[int64]int64),
+		leases:        make(map[int64]JobLease),
+		activeJobs:    make(map[int64]struct{}),
+		jobStore:      store,
+		leaseDuration: 5 * time.Second,
 	}
 
 	runtimepb.RegisterCoordinatorServiceServer(
