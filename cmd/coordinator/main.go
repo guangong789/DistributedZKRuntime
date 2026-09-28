@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -37,32 +39,8 @@ type CoordinatorServer struct {
 	onDispatchDone func(jobID, attemptID int64)
 
 	jobStore JobStore
-}
-
-type dispatchResult struct {
-	resp *runtimepb.ExecuteJobResponse
-	err  error
-}
-
-func dispatchJob(
-	ctx context.Context,
-	worker WorkerInfo,
-	req *runtimepb.ExecuteJobRequest,
-) (*runtimepb.ExecuteJobResponse, error) {
-	conn, err := grpc.NewClient(
-		worker.Address,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	client := runtimepb.NewWorkerServiceClient(conn)
-
-	return client.ExecuteJob(ctx, req)
+	// Configure before serving. Registrations coalesce readiness notifications.
+	recoveryReady chan struct{}
 }
 
 func (s *CoordinatorServer) SubmitJob(
@@ -83,168 +61,7 @@ func (s *CoordinatorServer) SubmitJob(
 
 	defer s.releaseJob(req.JobId)
 
-	const maxAttempts = 2
-	leaseDuration := s.leaseDuration
-	if leaseDuration <= 0 {
-		leaseDuration = 5 * time.Second
-	}
-
-	var lastErr error
-
-	for i := 0; i < maxAttempts; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		worker, ok := s.getNextWorker()
-		if !ok {
-			break
-		}
-
-		attemptID, err := s.startAttempt(req.JobId, worker.ID, leaseDuration)
-		if err != nil {
-			return nil, status.Errorf(
-				codes.Internal,
-				"failed to start attempt for job %d: %v",
-				req.JobId,
-				err,
-			)
-		}
-
-		attemptCtx, cancelAttempt := context.WithCancel(ctx)
-		resultCh := make(chan dispatchResult, 1)
-
-		go func() {
-			resp, err := dispatchJob(attemptCtx, worker, &runtimepb.ExecuteJobRequest{
-				JobId:     req.JobId,
-				TaskType:  req.TaskType,
-				Payload:   req.Payload,
-				TimeoutMs: req.TimeoutMs,
-				AttemptId: attemptID,
-			},
-			)
-
-			resultCh <- dispatchResult{
-				resp: resp,
-				err:  err,
-			}
-			if s.onDispatchDone != nil {
-				s.onDispatchDone(req.JobId, attemptID)
-			}
-		}()
-
-		leaseTimer := time.NewTimer(leaseDuration)
-
-		select {
-		case result := <-resultCh:
-			leaseTimer.Stop()
-			cancelAttempt()
-
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-
-			if result.err != nil {
-				lastErr = result.err
-
-				fmt.Printf(
-					"attempt failed: job=%d attempt=%d worker=%s err=%v\n",
-					req.JobId,
-					attemptID,
-					worker.ID,
-					result.err,
-				)
-
-				continue
-			}
-
-			resp := result.resp
-
-			if resp == nil ||
-				resp.JobId != req.JobId ||
-				resp.AttemptId != attemptID ||
-				!s.isLeaseCurrent(req.JobId, attemptID) {
-
-				lastErr = fmt.Errorf(
-					"stale, expired, or mismatched result for job %d attempt %d",
-					req.JobId,
-					attemptID,
-				)
-
-				continue
-			}
-
-			finalState, err := jobStateFromStatus(resp.Status)
-			if err != nil {
-				return nil, status.Errorf(
-					codes.Internal,
-					"invalid worker status for job %d attempt %d: %v",
-					req.JobId,
-					attemptID,
-					err,
-				)
-			}
-
-			record := JobRecord{
-				JobID:     req.JobId,
-				State:     finalState,
-				AttemptID: attemptID,
-				WorkerID:  worker.ID,
-			}
-
-			if s.jobStore != nil {
-				if err := s.jobStore.Save(record); err != nil {
-					return nil, status.Errorf(
-						codes.Internal,
-						"failed to persist final state for job %d attempt %d: %v",
-						req.JobId,
-						attemptID,
-						err,
-					)
-				}
-			}
-
-			return &runtimepb.SubmitJobResponse{
-				JobId:     resp.JobId,
-				Status:    resp.Status,
-				Output:    resp.Output,
-				Error:     resp.Error,
-				AttemptId: resp.AttemptId,
-			}, nil
-
-		case <-leaseTimer.C:
-			cancelAttempt()
-
-			lastErr = fmt.Errorf(
-				"lease expired for job %d attempt %d",
-				req.JobId,
-				attemptID,
-			)
-
-			fmt.Printf(
-				"lease expired: job=%d attempt=%d worker=%s\n",
-				req.JobId,
-				attemptID,
-				worker.ID,
-			)
-
-			continue
-
-		case <-ctx.Done():
-			leaseTimer.Stop()
-			cancelAttempt()
-
-			return nil, ctx.Err()
-		}
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if lastErr != nil {
-		return nil, status.Errorf(codes.Unavailable, "job submission failed: %v", lastErr)
-	}
-	return nil, status.Error(codes.Unavailable, "no alive workers available")
+	return s.executeJob(ctx, jobSpecFromRequest(req))
 }
 
 func main() {
@@ -276,6 +93,11 @@ func main() {
 		activeJobs:    make(map[int64]struct{}),
 		jobStore:      store,
 		leaseDuration: 5 * time.Second,
+		recoveryReady: make(chan struct{}, 1),
+	}
+
+	if err := coordinator.recoverRunningJobs(); err != nil {
+		log.Fatalf("failed to recover running jobs: %v", err)
 	}
 
 	runtimepb.RegisterCoordinatorServiceServer(
@@ -290,7 +112,25 @@ func main() {
 		3*time.Second,
 	)
 
-	if err := server.Serve(listener); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	recoveryDone := make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		if err := coordinator.waitAndRunRecovery(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("startup recovery failed: %v", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		server.Stop()
+	}()
+
+	err = server.Serve(listener)
+	cancel()
+	// Recovery must stop using the store before it is closed.
+	<-recoveryDone
+	if err != nil {
 		log.Fatal(err)
 	}
 }

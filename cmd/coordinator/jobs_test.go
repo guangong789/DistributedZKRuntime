@@ -50,11 +50,12 @@ func TestMemoryJobStoreMissingJob(t *testing.T) {
 func TestStartAttemptPersistsJobRecord(t *testing.T) {
 	store := NewMemoryJobStore()
 	s := &CoordinatorServer{jobStore: store}
+	const taskType, payload, timeoutMs = "hash", "hello", int64(1000)
 
 	assertAttempt := func(wantAttempt int64, workerID string) {
 		t.Helper()
 
-		attemptID, err := s.startAttempt(500, workerID, time.Minute)
+		attemptID, err := s.startAttempt(500, workerID, time.Minute, taskType, payload, timeoutMs)
 		if err != nil {
 			t.Fatalf("startAttempt failed: %v", err)
 		}
@@ -72,7 +73,10 @@ func TestStartAttemptPersistsJobRecord(t *testing.T) {
 		if record.JobID != 500 ||
 			record.AttemptID != attemptID ||
 			record.State != JobRunning ||
-			record.WorkerID != workerID {
+			record.WorkerID != workerID ||
+			record.TaskType != taskType ||
+			record.Payload != payload ||
+			record.TimeoutMs != timeoutMs {
 			t.Fatalf("persisted job record is incorrect: %+v", record)
 		}
 
@@ -100,6 +104,7 @@ func TestStartAttemptPersistsJobRecord(t *testing.T) {
 
 func TestStartAttemptContinuesAfterRestart(t *testing.T) {
 	store := NewMemoryJobStore()
+	const taskType, payload, timeoutMs = "sleep", "250ms", int64(1000)
 
 	first := &CoordinatorServer{
 		jobAttempts: make(map[int64]int64),
@@ -112,6 +117,9 @@ func TestStartAttemptContinuesAfterRestart(t *testing.T) {
 			500,
 			"worker-1",
 			5*time.Second,
+			taskType,
+			payload,
+			timeoutMs,
 		)
 		if err != nil {
 			t.Fatalf(
@@ -134,7 +142,9 @@ func TestStartAttemptContinuesAfterRestart(t *testing.T) {
 		t.Fatalf("load before restart: record=%+v found=%v error=%v", beforeRestart, ok, err)
 	}
 	if beforeRestart.JobID != 500 || beforeRestart.State != JobRunning ||
-		beforeRestart.AttemptID != 3 || beforeRestart.WorkerID != "worker-1" {
+		beforeRestart.AttemptID != 3 || beforeRestart.WorkerID != "worker-1" ||
+		beforeRestart.TaskType != taskType || beforeRestart.Payload != payload ||
+		beforeRestart.TimeoutMs != timeoutMs {
 		t.Fatalf("persisted record before restart: %+v", beforeRestart)
 	}
 
@@ -149,7 +159,7 @@ func TestStartAttemptContinuesAfterRestart(t *testing.T) {
 		t.Fatal("restarted coordinator must begin with empty in-memory state")
 	}
 
-	attemptID, err := second.startAttempt(500, "worker-after-restart", 5*time.Second)
+	attemptID, err := second.startAttempt(500, "worker-after-restart", 5*time.Second, taskType, payload, timeoutMs)
 	if err != nil {
 		t.Fatalf("start attempt after restart: %v", err)
 	}
@@ -162,7 +172,9 @@ func TestStartAttemptContinuesAfterRestart(t *testing.T) {
 		t.Fatalf("load after restart: record=%+v found=%v error=%v", record, ok, err)
 	}
 	if record.JobID != 500 || record.State != JobRunning ||
-		record.AttemptID != 4 || record.WorkerID != "worker-after-restart" {
+		record.AttemptID != 4 || record.WorkerID != "worker-after-restart" ||
+		record.TaskType != taskType || record.Payload != payload ||
+		record.TimeoutMs != timeoutMs {
 		t.Fatalf("persisted record after restart: %+v", record)
 	}
 
@@ -200,7 +212,7 @@ func TestStartAttemptUsesHigherOfMemoryAndStore(t *testing.T) {
 				jobAttempts: map[int64]int64{500: tt.memoryAttempt},
 				jobStore:    store,
 			}
-			attemptID, err := s.startAttempt(500, "next-worker", time.Minute)
+			attemptID, err := s.startAttempt(500, "next-worker", time.Minute, "hash", "hello", 1000)
 			if err != nil {
 				t.Fatalf("start attempt: %v", err)
 			}
@@ -215,6 +227,7 @@ func TestStartAttemptUsesHigherOfMemoryAndStore(t *testing.T) {
 			lease, leaseOK := s.getLease(500)
 			if record.JobID != 500 || record.State != JobRunning ||
 				record.AttemptID != tt.want || record.WorkerID != "next-worker" ||
+				record.TaskType != "hash" || record.Payload != "hello" || record.TimeoutMs != 1000 ||
 				!leaseOK || lease.JobID != record.JobID ||
 				lease.AttemptID != record.AttemptID || lease.WorkerID != record.WorkerID ||
 				s.jobAttempts[500] != tt.want {

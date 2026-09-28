@@ -26,6 +26,7 @@ func TestSubmitJobPersistsTerminalStateAcrossSQLiteReopen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const jobID int64 = 601
 			const workerID = "terminal-worker"
+			const taskType, payload, timeoutMs = "hash", "hello", int64(1000)
 			dbPath := filepath.Join(t.TempDir(), "jobs.db")
 			var accepted *runtimepb.SubmitJobResponse
 
@@ -45,8 +46,17 @@ func TestSubmitJobPersistsTerminalStateAcrossSQLiteReopen(t *testing.T) {
 				var calls atomic.Int32
 				registerTestWorker(t, coordinatorA, workerID, func(_ context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 					calls.Add(1)
-					if req.JobId != jobID || req.AttemptId != 1 {
+					if req.JobId != jobID || req.AttemptId != 1 ||
+						req.TaskType != taskType || req.Payload != payload || req.TimeoutMs != timeoutMs {
 						t.Errorf("unexpected worker request: %+v", req)
+					}
+					running, ok, err := storeA.Load(jobID)
+					wantRunning := JobRecord{
+						JobID: jobID, State: JobRunning, AttemptID: 1, WorkerID: workerID,
+						TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+					}
+					if err != nil || !ok || running != wantRunning {
+						t.Errorf("running record=%+v found=%v error=%v, want %+v", running, ok, err, wantRunning)
 					}
 					return &runtimepb.ExecuteJobResponse{
 						JobId: req.JobId, AttemptId: req.AttemptId,
@@ -56,7 +66,9 @@ func TestSubmitJobPersistsTerminalStateAcrossSQLiteReopen(t *testing.T) {
 
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				accepted, err = coordinatorA.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: jobID})
+				accepted, err = coordinatorA.SubmitJob(ctx, &runtimepb.SubmitJobRequest{
+					JobId: jobID, TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+				})
 				if err != nil || accepted == nil || accepted.JobId != jobID ||
 					accepted.AttemptId != 1 || accepted.Status != tc.status {
 					t.Fatalf("SubmitJob response=%+v error=%v", accepted, err)
@@ -73,7 +85,10 @@ func TestSubmitJobPersistsTerminalStateAcrossSQLiteReopen(t *testing.T) {
 				if err != nil || !ok {
 					t.Fatalf("load before close: record=%+v found=%v error=%v", record, ok, err)
 				}
-				want := JobRecord{JobID: jobID, State: tc.state, AttemptID: accepted.AttemptId, WorkerID: workerID}
+				want := JobRecord{
+					JobID: jobID, State: tc.state, AttemptID: accepted.AttemptId, WorkerID: workerID,
+					TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+				}
 				if record != want {
 					t.Fatalf("record before close=%+v, want %+v", record, want)
 				}
@@ -92,7 +107,10 @@ func TestSubmitJobPersistsTerminalStateAcrossSQLiteReopen(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("load after reopen: record=%+v found=%v error=%v", record, ok, err)
 			}
-			want := JobRecord{JobID: jobID, State: tc.state, AttemptID: accepted.AttemptId, WorkerID: workerID}
+			want := JobRecord{
+				JobID: jobID, State: tc.state, AttemptID: accepted.AttemptId, WorkerID: workerID,
+				TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+			}
 			if record != want {
 				t.Fatalf("record after reopen=%+v, want %+v", record, want)
 			}

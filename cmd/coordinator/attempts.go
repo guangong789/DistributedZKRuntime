@@ -16,6 +16,9 @@ func (s *CoordinatorServer) startAttempt(
 	jobID int64,
 	workerID string,
 	duration time.Duration,
+	taskType string,
+	payload string,
+	timeoutMs int64,
 ) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -50,6 +53,9 @@ func (s *CoordinatorServer) startAttempt(
 		State:     JobRunning,
 		AttemptID: next,
 		WorkerID:  workerID,
+		TaskType:  taskType,
+		Payload:   payload,
+		TimeoutMs: timeoutMs,
 	}
 
 	if s.jobStore != nil {

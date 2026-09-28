@@ -8,6 +8,7 @@ import (
 
 func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 	const jobID int64 = 501
+	const taskType, payload, timeoutMs = "hash", "hello", int64(1000)
 	dbPath := filepath.Join(t.TempDir(), "jobs.db")
 
 	// Scope the first coordinator and store so neither survives the reopen.
@@ -28,7 +29,7 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 			jobStore:    storeA,
 		}
 		for want := int64(1); want <= 3; want++ {
-			attemptID, err := coordinatorA.startAttempt(jobID, "worker-before-restart", time.Minute)
+			attemptID, err := coordinatorA.startAttempt(jobID, "worker-before-restart", time.Minute, taskType, payload, timeoutMs)
 			if err != nil {
 				t.Fatalf("start attempt %d before restart: %v", want, err)
 			}
@@ -42,7 +43,8 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 			t.Fatalf("load before restart: record=%+v found=%v error=%v", record, ok, err)
 		}
 		if record.JobID != jobID || record.State != JobRunning ||
-			record.AttemptID != 3 || record.WorkerID != "worker-before-restart" {
+			record.AttemptID != 3 || record.WorkerID != "worker-before-restart" ||
+			record.TaskType != taskType || record.Payload != payload || record.TimeoutMs != timeoutMs {
 			t.Fatalf("record before restart = %+v", record)
 		}
 	}()
@@ -74,7 +76,7 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 		t.Fatalf("persisted attempt after reopen = %d, want 3", before.AttemptID)
 	}
 
-	attemptID, err := coordinatorB.startAttempt(jobID, "worker-after-restart", time.Minute)
+	attemptID, err := coordinatorB.startAttempt(jobID, "worker-after-restart", time.Minute, taskType, payload, timeoutMs)
 	if err != nil {
 		t.Fatalf("start attempt after reopen: %v", err)
 	}
@@ -87,7 +89,8 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 		t.Fatalf("load after new attempt: record=%+v found=%v error=%v", record, ok, err)
 	}
 	if record.JobID != jobID || record.State != JobRunning ||
-		record.AttemptID != 4 || record.WorkerID != "worker-after-restart" {
+		record.AttemptID != 4 || record.WorkerID != "worker-after-restart" ||
+		record.TaskType != taskType || record.Payload != payload || record.TimeoutMs != timeoutMs {
 		t.Fatalf("record after restart = %+v", record)
 	}
 	lease, ok := coordinatorB.getLease(jobID)

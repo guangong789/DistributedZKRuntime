@@ -78,7 +78,7 @@ func TestSubmitRetryAndFencing(t *testing.T) {
 				case "expired lease":
 					s.setLease(req.JobId, req.AttemptId, "first", -time.Second)
 				case "superseded attempt":
-					if _, err := s.startAttempt(req.JobId, "other", time.Minute); err != nil {
+					if _, err := s.startAttempt(req.JobId, "other", time.Minute, req.TaskType, req.Payload, req.TimeoutMs); err != nil {
 						t.Errorf("start superseding attempt: %v", err)
 					}
 				}
@@ -375,7 +375,7 @@ func TestConcurrentAttemptAllocation(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, err := s.startAttempt(500, "worker", time.Minute)
+			id, err := s.startAttempt(500, "worker", time.Minute, "hash", "hello", 1000)
 			results <- attemptResult{id: id, err: err}
 		}()
 	}
@@ -396,7 +396,7 @@ func TestConcurrentAttemptAllocation(t *testing.T) {
 	if !ok || lease.AttemptID != count || !s.isLeaseCurrent(500, count) || s.isLeaseCurrent(500, count-1) {
 		t.Fatalf("latest attempt and lease diverged: %+v", lease)
 	}
-	next, err := s.startAttempt(501, "worker", time.Minute)
+	next, err := s.startAttempt(501, "worker", time.Minute, "hash", "second-job", 1000)
 	if err != nil {
 		t.Fatalf("start attempt for second job: %v", err)
 	}
@@ -662,13 +662,13 @@ func TestLateSuccessfulAttemptCannotReplaceAcceptedRetry(t *testing.T) {
 
 func TestSupersededSuccessFailsFencingBeforeOldLeaseExpires(t *testing.T) {
 	s := newTestCoordinator()
-	first, err := s.startAttempt(500, "first", time.Hour)
+	first, err := s.startAttempt(500, "first", time.Hour, "hash", "hello", 1000)
 	if err != nil {
 		t.Fatalf("start first attempt: %v", err)
 	}
 	oldLease, _ := s.getLease(500)
 	late := successfulResult(&runtimepb.ExecuteJobRequest{JobId: 500, AttemptId: first})
-	second, err := s.startAttempt(500, "second", time.Hour)
+	second, err := s.startAttempt(500, "second", time.Hour, "hash", "hello", 1000)
 	if err != nil {
 		t.Fatalf("start second attempt: %v", err)
 	}

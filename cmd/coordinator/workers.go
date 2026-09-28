@@ -54,6 +54,12 @@ func (s *CoordinatorServer) RegisterWorker(
 
 	s.mu.Unlock()
 
+	// A nil or full channel disables this send; registration never waits for recovery.
+	select {
+	case s.recoveryReady <- struct{}{}:
+	default:
+	}
+
 	fmt.Printf(
 		"registered worker: id=%s address=%s\n",
 		req.WorkerId,
