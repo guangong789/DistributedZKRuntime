@@ -154,6 +154,18 @@ func (s *CoordinatorServer) executeJob(
 				)
 			}
 
+			if spec.TaskType == "zk_square_prove" && finalState == JobSucceeded {
+				if err := verifyZKSquareResult(s.squareVerifier, spec.Payload, resp.Output); err != nil {
+					lastErr = fmt.Errorf(
+						"invalid zk square result for job %d attempt %d: %w",
+						spec.JobID,
+						attemptID,
+						err,
+					)
+					continue
+				}
+			}
+
 			record := JobRecord{
 				JobID:     spec.JobID,
 				State:     finalState,

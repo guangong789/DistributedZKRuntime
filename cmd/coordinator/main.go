@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -41,6 +42,8 @@ type CoordinatorServer struct {
 	jobStore JobStore
 	// Configure before serving. Registrations coalesce readiness notifications.
 	recoveryReady chan struct{}
+
+	squareVerifier SquareProofVerifier
 }
 
 func (s *CoordinatorServer) SubmitJob(
@@ -78,6 +81,12 @@ func main() {
 		"path to coordinator SQLite database",
 	)
 
+	verifyingKeyPath := flag.String(
+		"verifying-key",
+		"zk-artifacts/square/verifying.key",
+		"path to Groth16 verifying key",
+	)
+
 	flag.Parse()
 
 	store, err := NewSQLiteJobStore(*dbPath)
@@ -86,14 +95,23 @@ func main() {
 	}
 	defer store.Close()
 
+	squareVerifier, err := zk.LoadSquareVerifier(*verifyingKeyPath)
+	if err != nil {
+		log.Fatalf(
+			"load square verifier: %v",
+			err,
+		)
+	}
+
 	coordinator := &CoordinatorServer{
-		workers:       make(map[string]WorkerInfo),
-		jobAttempts:   make(map[int64]int64),
-		leases:        make(map[int64]JobLease),
-		activeJobs:    make(map[int64]struct{}),
-		jobStore:      store,
-		leaseDuration: 5 * time.Second,
-		recoveryReady: make(chan struct{}, 1),
+		workers:        make(map[string]WorkerInfo),
+		jobAttempts:    make(map[int64]int64),
+		leases:         make(map[int64]JobLease),
+		activeJobs:     make(map[int64]struct{}),
+		jobStore:       store,
+		leaseDuration:  5 * time.Second,
+		recoveryReady:  make(chan struct{}, 1),
+		squareVerifier: squareVerifier,
 	}
 
 	if err := coordinator.recoverRunningJobs(); err != nil {
@@ -117,9 +135,7 @@ func main() {
 	recoveryDone := make(chan struct{})
 	go func() {
 		defer close(recoveryDone)
-		if err := coordinator.waitAndRunRecovery(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("startup recovery failed: %v", err)
-		}
+		coordinator.runRecoveryLoop(ctx)
 	}()
 	go func() {
 		<-ctx.Done()

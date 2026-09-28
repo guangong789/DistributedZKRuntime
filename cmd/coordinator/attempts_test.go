@@ -1,51 +1,10 @@
 package main
 
 import (
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
-
-func TestMemoryJobStoreSaveAndLoad(t *testing.T) {
-	store := NewMemoryJobStore()
-
-	record := JobRecord{
-		JobID:     500,
-		State:     JobRunning,
-		AttemptID: 7,
-		WorkerID:  "worker-1",
-	}
-
-	if err := store.Save(record); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	got, ok, err := store.Load(500)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-
-	if !ok {
-		t.Fatal("expected job to exist")
-	}
-
-	if got != record {
-		t.Fatalf("got %+v, want %+v", got, record)
-	}
-}
-
-func TestMemoryJobStoreMissingJob(t *testing.T) {
-	store := NewMemoryJobStore()
-
-	_, ok, err := store.Load(999)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-
-	if ok {
-		t.Fatal("expected job to be missing")
-	}
-}
 
 func TestStartAttemptPersistsJobRecord(t *testing.T) {
 	store := NewMemoryJobStore()
@@ -238,146 +197,148 @@ func TestStartAttemptUsesHigherOfMemoryAndStore(t *testing.T) {
 	}
 }
 
-func TestSQLiteJobStorePersistsAcrossReopen(t *testing.T) {
-	dbPath := filepath.Join(
-		t.TempDir(),
-		"jobs.db",
+func TestLeaseCreatedForAttempt(t *testing.T) {
+	s := &CoordinatorServer{
+		leases: make(map[int64]JobLease),
+	}
+
+	s.setLease(
+		500,
+		2,
+		"worker-1",
+		time.Second,
 	)
 
-	store1, err := NewSQLiteJobStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewSQLiteJobStore failed: %v", err)
-	}
-
-	record := JobRecord{
-		JobID:     500,
-		State:     JobRunning,
-		AttemptID: 3,
-		WorkerID:  "worker-1",
-	}
-
-	if err := store1.Save(record); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	if err := store1.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-
-	store2, err := NewSQLiteJobStore(dbPath)
-	if err != nil {
-		t.Fatalf("reopen SQLite store failed: %v", err)
-	}
-	defer store2.Close()
-
-	got, ok, err := store2.Load(500)
-	if err != nil {
-		t.Fatalf("Load after reopen failed: %v", err)
-	}
-
+	lease, ok := s.getLease(500)
 	if !ok {
-		t.Fatal("expected persisted job after reopening database")
+		t.Fatal("expected lease")
 	}
 
-	if got != record {
+	if lease.AttemptID != 2 {
 		t.Fatalf(
-			"got %+v after reopen, want %+v",
-			got,
-			record,
+			"expected attempt 2, got %d",
+			lease.AttemptID,
+		)
+	}
+
+	if lease.WorkerID != "worker-1" {
+		t.Fatalf(
+			"expected worker-1, got %s",
+			lease.WorkerID,
 		)
 	}
 }
 
-func TestSQLiteJobStoreUpdatesExistingJob(t *testing.T) {
-	dbPath := filepath.Join(
-		t.TempDir(),
-		"jobs.db",
-	)
+func TestIsLeaseCurrent(t *testing.T) {
+	now := time.Now()
 
-	store, err := NewSQLiteJobStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewSQLiteJobStore failed: %v", err)
-	}
-	defer store.Close()
-
-	first := JobRecord{
-		JobID:     500,
-		State:     JobRunning,
-		AttemptID: 1,
-		WorkerID:  "worker-1",
+	s := &CoordinatorServer{
+		leases: map[int64]JobLease{
+			500: {
+				JobID:     500,
+				AttemptID: 2,
+				WorkerID:  "worker-1",
+				ExpiresAt: now.Add(time.Second),
+			},
+		},
 	}
 
-	if err := store.Save(first); err != nil {
-		t.Fatalf("Save first record failed: %v", err)
+	if !s.isLeaseCurrent(500, 2) {
+		t.Fatal("expected current valid lease")
 	}
 
-	second := JobRecord{
-		JobID:     500,
-		State:     JobRunning,
-		AttemptID: 2,
-		WorkerID:  "worker-2",
+	if s.isLeaseCurrent(500, 1) {
+		t.Fatal("old attempt should not be current")
 	}
 
-	if err := store.Save(second); err != nil {
-		t.Fatalf("Save second record failed: %v", err)
-	}
+	s.mu.Lock()
+	lease := s.leases[500]
+	lease.ExpiresAt = time.Now().Add(-time.Second)
+	s.leases[500] = lease
+	s.mu.Unlock()
 
-	got, ok, err := store.Load(500)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-
-	if !ok {
-		t.Fatal("expected job to exist")
-	}
-
-	if got != second {
-		t.Fatalf(
-			"got %+v, want %+v",
-			got,
-			second,
-		)
+	if s.isLeaseCurrent(500, 2) {
+		t.Fatal("expired lease should not be current")
 	}
 }
 
-func TestSQLiteJobStorePersistsTerminalStateAcrossReopen(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "jobs.db")
+func TestLeaseExpiry(t *testing.T) {
+	now := time.Now()
 
-	store1, err := NewSQLiteJobStore(dbPath)
+	s := &CoordinatorServer{
+		leases: map[int64]JobLease{
+			500: {
+				JobID:     500,
+				AttemptID: 1,
+				WorkerID:  "worker-1",
+				ExpiresAt: now.Add(time.Second),
+			},
+		},
+	}
+
+	if s.leaseExpired(500, now) {
+		t.Fatal("lease should not be expired yet")
+	}
+
+	if !s.leaseExpired(
+		500,
+		now.Add(2*time.Second),
+	) {
+		t.Fatal("lease should be expired")
+	}
+}
+
+func TestConcurrentAttemptAllocation(t *testing.T) {
+	s := newTestCoordinator()
+	const count = 100
+	type attemptResult struct {
+		id  int64
+		err error
+	}
+	results := make(chan attemptResult, count)
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := s.startAttempt(500, "worker", time.Minute, "hash", "hello", 1000)
+			results <- attemptResult{id: id, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	seen := make(map[int64]bool)
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("start attempt: %v", result.err)
+		}
+		id := result.id
+		if id < 1 || id > count || seen[id] {
+			t.Fatalf("invalid or duplicate attempt: %d", id)
+		}
+		seen[id] = true
+	}
+	lease, ok := s.getLease(500)
+	if !ok || lease.AttemptID != count || !s.isLeaseCurrent(500, count) || s.isLeaseCurrent(500, count-1) {
+		t.Fatalf("latest attempt and lease diverged: %+v", lease)
+	}
+	next, err := s.startAttempt(501, "worker", time.Minute, "hash", "second-job", 1000)
 	if err != nil {
-		t.Fatalf("open store1: %v", err)
+		t.Fatalf("start attempt for second job: %v", err)
 	}
+	if next != 1 {
+		t.Fatalf("attempt IDs are not per-job: %d", next)
+	}
+}
 
-	record := JobRecord{
-		JobID:     500,
-		State:     JobSucceeded,
-		AttemptID: 3,
-		WorkerID:  "worker-1",
+func TestLeaseExpiryBoundaryAndMissingLease(t *testing.T) {
+	s := newTestCoordinator()
+	if s.leaseExpired(1, time.Now()) || s.isLeaseCurrent(1, 1) {
+		t.Fatal("missing lease reported expired or current")
 	}
-
-	if err := store1.Save(record); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	if err := store1.Close(); err != nil {
-		t.Fatalf("close store1: %v", err)
-	}
-
-	store2, err := NewSQLiteJobStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store2: %v", err)
-	}
-	defer store2.Close()
-
-	got, ok, err := store2.Load(500)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected persisted job")
-	}
-
-	if got != record {
-		t.Fatalf("got %+v, want %+v", got, record)
+	s.setLease(1, 1, "worker", time.Minute)
+	lease, _ := s.getLease(1)
+	if !s.leaseExpired(1, lease.ExpiresAt) {
+		t.Fatal("lease must be expired at its expiry time")
 	}
 }

@@ -5,14 +5,22 @@ import (
 	"log"
 )
 
-// waitAndRunRecovery is launched once at startup. Later signals do not run
-// another pass; jobs left recovering await a future recovery mechanism.
-func (s *CoordinatorServer) waitAndRunRecovery(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.recoveryReady:
-		return s.runRecoveryPass(ctx)
+// runRecoveryLoop processes registrations serially until shutdown. Readiness
+// signals coalesce while a pass is running.
+func (s *CoordinatorServer) runRecoveryLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-s.recoveryReady:
+			if err := s.runRecoveryPass(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("recovery pass failed: %v", err)
+			}
+		}
 	}
 }
 

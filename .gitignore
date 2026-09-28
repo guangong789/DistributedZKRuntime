@@ -7,6 +7,8 @@
 /coordinator.exe
 /worker
 /worker.exe
+/zksetup
+/zksetup.exe
 *.test
 *.test.exe
 /coverage.out
@@ -33,3 +35,6 @@ Thumbs.db
 *.sqlite3-journal
 *.log
 *.tmp
+
+# Generated local Groth16 setup keys
+zk-artifacts/

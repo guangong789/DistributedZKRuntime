@@ -9,6 +9,7 @@ import (
 	"time"
 
 	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
+	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -18,9 +19,15 @@ import (
 
 type WorkerService struct {
 	runtimepb.UnimplementedWorkerServiceServer
+
+	squareProver *zk.SquareProver
 }
 
-func buildTask(taskType string, payload string) (runtime.Task, error) {
+func buildTask(
+	taskType string,
+	payload string,
+	squareProver *zk.SquareProver,
+) (runtime.Task, error) {
 	switch taskType {
 	case "hash":
 		return runtime.HashTask{
@@ -35,6 +42,16 @@ func buildTask(taskType string, payload string) (runtime.Task, error) {
 
 		return runtime.SleepTask{
 			Duration: duration,
+		}, nil
+
+	case "zk_square_prove":
+		if squareProver == nil {
+			return nil, fmt.Errorf("square prover is not configured")
+		}
+
+		return runtime.ZKSquareTask{
+			Payload: payload,
+			Prover:  squareProver,
 		}, nil
 
 	default:
@@ -54,7 +71,11 @@ func (s *WorkerService) ExecuteJob(
 	ctx context.Context,
 	req *runtimepb.ExecuteJobRequest,
 ) (*runtimepb.ExecuteJobResponse, error) {
-	task, err := buildTask(req.TaskType, req.Payload)
+	task, err := buildTask(
+		req.TaskType,
+		req.Payload,
+		s.squareProver,
+	)
 	if err != nil {
 		return &runtimepb.ExecuteJobResponse{
 			JobId:     req.JobId,
@@ -205,43 +226,67 @@ func main() {
 		"coordinator address",
 	)
 
+	provingKeyPath := flag.String(
+		"proving-key",
+		"zk-artifacts/square/proving.key",
+		"path to Groth16 proving key",
+	)
+
 	flag.Parse()
+
+	// Load the proving capability once at worker startup.
+	squareProver, err := zk.LoadSquareProver(*provingKeyPath)
+	if err != nil {
+		log.Fatalf("load square prover: %v", err)
+	}
 
 	listener, err := net.Listen("tcp", *listenAddress)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("listen on %s: %v", *listenAddress, err)
 	}
 
 	server := grpc.NewServer()
 
+	workerService := &WorkerService{
+		squareProver: squareProver,
+	}
+
 	runtimepb.RegisterWorkerServiceServer(
 		server,
-		&WorkerService{},
+		workerService,
 	)
 
-	go runHeartbeat(
-		*workerID,
-		*advertiseAddress,
-		*coordinatorAddress,
-	)
-
+	// Start serving before registering with the coordinator so that
+	// the worker is reachable as soon as the coordinator schedules it.
 	go func() {
-		fmt.Printf("worker %s listening on %s\n", *workerID, *listenAddress)
+		fmt.Printf(
+			"worker %s listening on %s\n",
+			*workerID,
+			*listenAddress,
+		)
 
 		if err := server.Serve(listener); err != nil {
-			log.Fatal(err)
+			log.Fatalf("worker gRPC server: %v", err)
 		}
 	}()
 
+	// Register once during startup.
 	if err := registerWithCoordinator(
 		*workerID,
 		*advertiseAddress,
 		*coordinatorAddress,
 	); err != nil {
-		log.Fatal(err)
+		log.Fatalf("register with coordinator: %v", err)
 	}
 
 	fmt.Println("worker registered successfully")
+
+	// Heartbeats start after the initial registration succeeds.
+	go runHeartbeat(
+		*workerID,
+		*advertiseAddress,
+		*coordinatorAddress,
+	)
 
 	select {}
 }

@@ -362,61 +362,6 @@ func TestSubmitNoAliveWorkers(t *testing.T) {
 	}
 }
 
-func TestConcurrentAttemptAllocation(t *testing.T) {
-	s := newTestCoordinator()
-	const count = 100
-	type attemptResult struct {
-		id  int64
-		err error
-	}
-	results := make(chan attemptResult, count)
-	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			id, err := s.startAttempt(500, "worker", time.Minute, "hash", "hello", 1000)
-			results <- attemptResult{id: id, err: err}
-		}()
-	}
-	wg.Wait()
-	close(results)
-	seen := make(map[int64]bool)
-	for result := range results {
-		if result.err != nil {
-			t.Fatalf("start attempt: %v", result.err)
-		}
-		id := result.id
-		if id < 1 || id > count || seen[id] {
-			t.Fatalf("invalid or duplicate attempt: %d", id)
-		}
-		seen[id] = true
-	}
-	lease, ok := s.getLease(500)
-	if !ok || lease.AttemptID != count || !s.isLeaseCurrent(500, count) || s.isLeaseCurrent(500, count-1) {
-		t.Fatalf("latest attempt and lease diverged: %+v", lease)
-	}
-	next, err := s.startAttempt(501, "worker", time.Minute, "hash", "second-job", 1000)
-	if err != nil {
-		t.Fatalf("start attempt for second job: %v", err)
-	}
-	if next != 1 {
-		t.Fatalf("attempt IDs are not per-job: %d", next)
-	}
-}
-
-func TestLeaseExpiryBoundaryAndMissingLease(t *testing.T) {
-	s := newTestCoordinator()
-	if s.leaseExpired(1, time.Now()) || s.isLeaseCurrent(1, 1) {
-		t.Fatal("missing lease reported expired or current")
-	}
-	s.setLease(1, 1, "worker", time.Minute)
-	lease, _ := s.getLease(1)
-	if !s.leaseExpired(1, lease.ExpiresAt) {
-		t.Fatal("lease must be expired at its expiry time")
-	}
-}
-
 func TestRetrySkipsDeadWorker(t *testing.T) {
 	s := newTestCoordinator()
 	registerTestWorker(t, s, "first", func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {

@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,4 +203,186 @@ func TestWorkerRecoversAfterCoordinatorStateLoss(t *testing.T) {
 		selected.Address != workerAddress || selected.Status != WorkerAlive {
 		t.Fatalf("recovered worker is not schedulable: %+v found=%v", selected, ok)
 	}
+}
+
+func TestSQLiteRestartRecoversJobAfterWorkerReregistration(t *testing.T) {
+	const jobID int64 = 801
+	const workerID = "restarted-worker"
+	request := &runtimepb.SubmitJobRequest{
+		JobId: jobID, TaskType: "hash", Payload: "proof-input", TimeoutMs: 1500,
+	}
+	dbPath := filepath.Join(t.TempDir(), "jobs.db")
+	storeA, err := NewSQLiteJobStore(dbPath)
+	if err != nil {
+		t.Fatalf("open first SQLite store: %v", err)
+	}
+	t.Cleanup(func() { _ = storeA.Close() })
+	coordinatorA := &CoordinatorServer{jobStore: storeA}
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	oldReturned := make(chan struct{})
+	oldDispatchDone := make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	var firstCalls, secondCalls atomic.Int32
+	coordinatorA.onDispatchDone = func(id, attempt int64) {
+		if id == jobID && attempt == 1 {
+			oldDispatchDone <- struct{}{}
+		}
+	}
+	registerTestWorker(t, coordinatorA, workerID, func(_ context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
+		switch req.AttemptId {
+		case 1:
+			if firstCalls.Add(1) == 1 {
+				close(oldStarted)
+			}
+			// Model a remote worker that finishes after its original coordinator
+			// has canceled the RPC and a new coordinator accepts Attempt 2.
+			<-releaseOld
+			close(oldReturned)
+			return successfulResult(req), nil
+		case 2:
+			secondCalls.Add(1)
+			if req.JobId != jobID || req.TaskType != request.TaskType ||
+				req.Payload != request.Payload || req.TimeoutMs != request.TimeoutMs {
+				t.Errorf("recovered worker request lost task specification: %+v", req)
+			}
+			return successfulResult(req), nil
+		default:
+			t.Errorf("unexpected worker attempt: %+v", req)
+			return successfulResult(req), nil
+		}
+	})
+	// Cleanup runs before the test worker server stops, including after t.Fatal.
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseOld) }) })
+	worker, ok, _ := coordinatorWorkerSnapshot(coordinatorA, workerID)
+	if !ok {
+		t.Fatal("worker was not registered with Coordinator A")
+	}
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	submitDone := make(chan error, 1)
+	go func() {
+		_, err := coordinatorA.SubmitJob(ctxA, request)
+		submitDone <- err
+	}()
+	select {
+	case <-oldStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Attempt 1 did not reach the old worker")
+	}
+	running := JobRecord{
+		JobID: jobID, State: JobRunning, AttemptID: 1, WorkerID: workerID,
+		TaskType: request.TaskType, Payload: request.Payload, TimeoutMs: request.TimeoutMs,
+	}
+	assertSQLiteJobRecord(t, storeA, running)
+	cancelA()
+	select {
+	case err := <-submitDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("old submission error=%v, want cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("old submission did not stop")
+	}
+	select {
+	case <-oldDispatchDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old dispatch goroutine did not finish")
+	}
+	assertSQLiteJobRecord(t, storeA, running)
+	if err := storeA.Close(); err != nil {
+		t.Fatalf("close first SQLite store: %v", err)
+	}
+	// Coordinator A and its store are no longer used. Only the DB file is
+	// carried into this fresh coordinator with empty in-memory state.
+	storeB, err := NewSQLiteJobStore(dbPath)
+	if err != nil {
+		t.Fatalf("open replacement SQLite store: %v", err)
+	}
+	coordinatorB := &CoordinatorServer{
+		workers: make(map[string]WorkerInfo), jobAttempts: make(map[int64]int64),
+		leases: make(map[int64]JobLease), activeJobs: make(map[int64]struct{}),
+		jobStore: storeB, recoveryReady: make(chan struct{}, 1),
+	}
+	if len(coordinatorB.workers) != 0 || len(coordinatorB.jobAttempts) != 0 ||
+		len(coordinatorB.leases) != 0 || len(coordinatorB.activeJobs) != 0 {
+		t.Fatal("Coordinator B did not start with empty in-memory state")
+	}
+	assertSQLiteJobRecord(t, storeB, running)
+	if err := coordinatorB.recoverRunningJobs(); err != nil {
+		t.Fatalf("mark persisted Running job as Recovering: %v", err)
+	}
+	recovering := running
+	recovering.State = JobRecovering
+	assertSQLiteJobRecord(t, storeB, recovering)
+	if len(coordinatorB.jobAttempts) != 0 || len(coordinatorB.leases) != 0 {
+		t.Fatal("startup marking allocated an attempt or lease")
+	}
+
+	terminalSaved := make(chan struct{}, 1)
+	coordinatorB.jobStore = &recoveryPassStore{JobStore: storeB, save: func(record JobRecord) error {
+		if err := storeB.Save(record); err != nil {
+			return err
+		}
+		if record.JobID == jobID && record.State == JobSucceeded {
+			terminalSaved <- struct{}{}
+		}
+		return nil
+	}}
+	loopCtx, cancelLoop := context.WithCancel(context.Background())
+	loopDone := make(chan struct{})
+	go func() { coordinatorB.runRecoveryLoop(loopCtx); close(loopDone) }()
+	t.Cleanup(func() {
+		cancelLoop()
+		<-loopDone
+		_ = storeB.Close()
+	})
+	client := &recordingCoordinatorClient{
+		CoordinatorServiceClient: startTestCoordinator(t, coordinatorB),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := workerheartbeat.Send(ctx, client, workerID, worker.Address); err != nil {
+		t.Fatalf("worker heartbeat and re-registration: %v", err)
+	}
+	if len(client.heartbeatAccepted) != 1 || client.heartbeatAccepted[0] ||
+		len(client.registrations) != 1 || client.registrations[0].WorkerId != workerID ||
+		client.registrations[0].Address != worker.Address {
+		t.Fatalf("unexpected worker re-registration: heartbeats=%v registrations=%v",
+			client.heartbeatAccepted, client.registrations)
+	}
+	select {
+	case <-terminalSaved:
+	case <-ctx.Done():
+		t.Fatal("registered worker did not finish recovered attempt")
+	}
+	want := running
+	want.State, want.AttemptID = JobSucceeded, 2
+	assertSQLiteJobRecord(t, storeB, want)
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 || coordinatorB.jobAttempts[jobID] != 2 {
+		t.Fatalf("wrong attempt counts: first=%d second=%d generation=%d",
+			firstCalls.Load(), secondCalls.Load(), coordinatorB.jobAttempts[jobID])
+	}
+	lease, ok := coordinatorB.getLease(jobID)
+	if !ok || lease.AttemptID != 2 || lease.WorkerID != workerID {
+		t.Fatalf("recovered lease=%+v found=%v", lease, ok)
+	}
+	releaseOnce.Do(func() { close(releaseOld) })
+	select {
+	case <-oldReturned:
+	case <-ctx.Done():
+		t.Fatal("old worker did not finish late")
+	}
+	assertSQLiteJobRecord(t, storeB, want)
+	cancelLoop()
+	select {
+	case <-loopDone:
+	case <-ctx.Done():
+		t.Fatal("recovery loop did not stop")
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 || coordinatorB.jobAttempts[jobID] != 2 {
+		t.Fatal("late Attempt 1 caused an extra execution")
+	}
+	assertRecoveryOwnershipReleased(t, coordinatorB, jobID)
 }
