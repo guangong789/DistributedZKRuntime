@@ -38,3 +38,6 @@ Thumbs.db
 
 # Generated local Groth16 setup keys
 zk-artifacts/
+
+# Worker-local private witnesses
+private/

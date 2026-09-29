@@ -20,13 +20,15 @@ import (
 type WorkerService struct {
 	runtimepb.UnimplementedWorkerServiceServer
 
-	squareProver *zk.SquareProver
+	preimageProver *zk.PreimageProver
+	witnessStore   runtime.WitnessStore
 }
 
 func buildTask(
 	taskType string,
 	payload string,
-	squareProver *zk.SquareProver,
+	preimageProver *zk.PreimageProver,
+	witnessStore runtime.WitnessStore,
 ) (runtime.Task, error) {
 	switch taskType {
 	case "hash":
@@ -44,14 +46,19 @@ func buildTask(
 			Duration: duration,
 		}, nil
 
-	case "zk_square_prove":
-		if squareProver == nil {
-			return nil, fmt.Errorf("square prover is not configured")
+	case "zk_preimage_prove":
+		if preimageProver == nil {
+			return nil, fmt.Errorf("preimage prover is not configured")
 		}
 
-		return runtime.ZKSquareTask{
-			Payload: payload,
-			Prover:  squareProver,
+		if witnessStore == nil {
+			return nil, fmt.Errorf("witness store is not configured")
+		}
+
+		return runtime.ZKPreimageTask{
+			Payload:      payload,
+			Prover:       preimageProver,
+			WitnessStore: witnessStore,
 		}, nil
 
 	default:
@@ -74,7 +81,8 @@ func (s *WorkerService) ExecuteJob(
 	task, err := buildTask(
 		req.TaskType,
 		req.Payload,
-		s.squareProver,
+		s.preimageProver,
+		s.witnessStore,
 	)
 	if err != nil {
 		return &runtimepb.ExecuteJobResponse{
@@ -228,16 +236,27 @@ func main() {
 
 	provingKeyPath := flag.String(
 		"proving-key",
-		"zk-artifacts/square/proving.key",
-		"path to Groth16 proving key",
+		"zk-artifacts/preimage/proving.key",
+		"path to preimage Groth16 proving key",
+	)
+
+	witnessFilePath := flag.String(
+		"witness-file",
+		"private/witnesses.json",
+		"path to local private witness file",
 	)
 
 	flag.Parse()
 
 	// Load the proving capability once at worker startup.
-	squareProver, err := zk.LoadSquareProver(*provingKeyPath)
+	preimageProver, err := zk.LoadPreimageProver(*provingKeyPath)
 	if err != nil {
-		log.Fatalf("load square prover: %v", err)
+		log.Fatal(err)
+	}
+
+	witnessStore, err := runtime.LoadMemoryWitnessStore(*witnessFilePath)
+	if err != nil {
+		log.Fatalf("failed to load witness store: %v", err)
 	}
 
 	listener, err := net.Listen("tcp", *listenAddress)
@@ -248,7 +267,8 @@ func main() {
 	server := grpc.NewServer()
 
 	workerService := &WorkerService{
-		squareProver: squareProver,
+		preimageProver: preimageProver,
+		witnessStore:   witnessStore,
 	}
 
 	runtimepb.RegisterWorkerServiceServer(

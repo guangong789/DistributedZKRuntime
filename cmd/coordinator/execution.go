@@ -154,14 +154,27 @@ func (s *CoordinatorServer) executeJob(
 				)
 			}
 
-			if spec.TaskType == "zk_square_prove" && finalState == JobSucceeded {
-				if err := verifyZKSquareResult(s.squareVerifier, spec.Payload, resp.Output); err != nil {
+			if spec.TaskType == "zk_preimage_prove" && finalState == JobSucceeded {
+				if err := verifyZKPreimageResult(
+					s.preimageVerifier,
+					spec.Payload,
+					resp.Output,
+				); err != nil {
 					lastErr = fmt.Errorf(
-						"invalid zk square result for job %d attempt %d: %w",
+						"preimage proof verification failed for job %d attempt %d: %w",
 						spec.JobID,
 						attemptID,
 						err,
 					)
+
+					fmt.Printf(
+						"attempt rejected: job=%d attempt=%d worker=%s err=%v\n",
+						spec.JobID,
+						attemptID,
+						worker.ID,
+						lastErr,
+					)
+
 					continue
 				}
 			}

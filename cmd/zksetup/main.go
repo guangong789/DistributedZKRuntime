@@ -13,8 +13,8 @@ import (
 func main() {
 	outDir := flag.String(
 		"out",
-		"zk-artifacts/square",
-		"directory for square circuit setup artifacts",
+		"zk-artifacts/preimage",
+		"directory for preimage circuit setup artifacts",
 	)
 
 	flag.Parse()
@@ -26,8 +26,8 @@ func main() {
 	pkPath := filepath.Join(*outDir, "proving.key")
 	vkPath := filepath.Join(*outDir, "verifying.key")
 
-	if err := zk.GenerateSquareSetup(pkPath, vkPath); err != nil {
-		log.Fatalf("generate square setup: %v", err)
+	if err := zk.GeneratePreimageSetup(pkPath, vkPath); err != nil {
+		log.Fatalf("generate preimage setup: %v", err)
 	}
 
 	fmt.Printf("proving key: %s\n", pkPath)

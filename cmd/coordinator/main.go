@@ -43,7 +43,7 @@ type CoordinatorServer struct {
 	// Configure before serving. Registrations coalesce readiness notifications.
 	recoveryReady chan struct{}
 
-	squareVerifier SquareProofVerifier
+	preimageVerifier PreimageProofVerifier
 }
 
 func (s *CoordinatorServer) SubmitJob(
@@ -68,13 +68,6 @@ func (s *CoordinatorServer) SubmitJob(
 }
 
 func main() {
-	listener, err := net.Listen("tcp", ":50050")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	server := grpc.NewServer()
-
 	dbPath := flag.String(
 		"db",
 		"runtime.db",
@@ -83,8 +76,8 @@ func main() {
 
 	verifyingKeyPath := flag.String(
 		"verifying-key",
-		"zk-artifacts/square/verifying.key",
-		"path to Groth16 verifying key",
+		"zk-artifacts/preimage/verifying.key",
+		"path to preimage verifying key",
 	)
 
 	flag.Parse()
@@ -95,28 +88,32 @@ func main() {
 	}
 	defer store.Close()
 
-	squareVerifier, err := zk.LoadSquareVerifier(*verifyingKeyPath)
+	preimageVerifier, err := zk.LoadPreimageVerifier(*verifyingKeyPath)
 	if err != nil {
-		log.Fatalf(
-			"load square verifier: %v",
-			err,
-		)
+		log.Fatalf("failed to load preimage verifier: %v", err)
 	}
 
 	coordinator := &CoordinatorServer{
-		workers:        make(map[string]WorkerInfo),
-		jobAttempts:    make(map[int64]int64),
-		leases:         make(map[int64]JobLease),
-		activeJobs:     make(map[int64]struct{}),
-		jobStore:       store,
-		leaseDuration:  5 * time.Second,
-		recoveryReady:  make(chan struct{}, 1),
-		squareVerifier: squareVerifier,
+		workers:          make(map[string]WorkerInfo),
+		jobAttempts:      make(map[int64]int64),
+		leases:           make(map[int64]JobLease),
+		activeJobs:       make(map[int64]struct{}),
+		jobStore:         store,
+		leaseDuration:    5 * time.Second,
+		recoveryReady:    make(chan struct{}, 1),
+		preimageVerifier: preimageVerifier,
 	}
 
 	if err := coordinator.recoverRunningJobs(); err != nil {
 		log.Fatalf("failed to recover running jobs: %v", err)
 	}
+
+	listener, err := net.Listen("tcp", ":50050")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	server := grpc.NewServer()
 
 	runtimepb.RegisterCoordinatorServiceServer(
 		server,
