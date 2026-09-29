@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"time"
@@ -35,8 +36,16 @@ func proofByteLength(output string) int {
 }
 
 func main() {
-	conn, err := grpc.NewClient(
+	coordinatorAddr := flag.String(
+		"coordinator",
 		"localhost:50050",
+		"coordinator address",
+	)
+
+	flag.Parse()
+
+	conn, err := grpc.NewClient(
+		*coordinatorAddr,
 		grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		),
