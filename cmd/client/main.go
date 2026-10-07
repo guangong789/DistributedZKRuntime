@@ -71,7 +71,7 @@ func main() {
 	resp, err := client.SubmitJob(
 		ctx,
 		&runtimepb.SubmitJobRequest{
-			JobId:     2001,
+			JobId:     3001,
 			TaskType:  "zk_preimage_prove",
 			Payload:   payload,
 			TimeoutMs: 5000,

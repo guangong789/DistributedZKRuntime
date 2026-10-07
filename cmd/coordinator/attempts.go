@@ -2,6 +2,8 @@ package main
 
 import (
 	"time"
+
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 )
 
 type JobLease struct {
@@ -11,13 +13,40 @@ type JobLease struct {
 	ExpiresAt time.Time
 }
 
-// startAttempt persists the next ID before publishing it and its lease under s.mu.
+// startAttempt retains the submit-source entry point used by existing callers.
 func (s *CoordinatorServer) startAttempt(
 	jobID int64,
 	workerID string,
 	duration time.Duration,
 	taskType string,
 	payload string,
+	timeoutMs int64,
+) (int64, error) {
+	return s.startAttemptFromSource(jobID, workerID, duration, taskType, payload, timeoutMs, metrics.SourceSubmit)
+}
+
+func (s *CoordinatorServer) startAttemptFromSource(
+	jobID int64,
+	workerID string,
+	duration time.Duration,
+	taskType, payload string,
+	timeoutMs int64,
+	source metrics.ExecutionSource,
+) (int64, error) {
+	attempt, err := s.publishAttempt(jobID, workerID, duration, taskType, payload, timeoutMs)
+	if err == nil && s.jobStore != nil {
+		// The callback runs after durable/in-memory publication and outside s.mu.
+		metrics.Resolve(s.metrics).AttemptStarted(source)
+	}
+	return attempt, err
+}
+
+// publishAttempt persists the next ID before publishing it and its lease under s.mu.
+func (s *CoordinatorServer) publishAttempt(
+	jobID int64,
+	workerID string,
+	duration time.Duration,
+	taskType, payload string,
 	timeoutMs int64,
 ) (int64, error) {
 	s.mu.Lock()

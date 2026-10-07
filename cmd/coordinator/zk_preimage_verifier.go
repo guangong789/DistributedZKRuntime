@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 )
 
 type PreimageProofVerifier interface {
@@ -21,6 +23,15 @@ func verifyZKPreimageResult(
 	verifier PreimageProofVerifier,
 	payload string,
 	output string,
+) error {
+	return verifyZKPreimageResultWithMetrics(verifier, payload, output, metrics.NoopMetrics{})
+}
+
+func verifyZKPreimageResultWithMetrics(
+	verifier PreimageProofVerifier,
+	payload string,
+	output string,
+	observer metrics.Metrics,
 ) error {
 	if verifier == nil {
 		return fmt.Errorf("preimage verifier is not configured")
@@ -46,7 +57,10 @@ func verifyZKPreimageResult(
 		return fmt.Errorf("decode preimage proof: %w", err)
 	}
 
-	if err := verifier.Verify(proofBytes, digest); err != nil {
+	start := time.Now()
+	err = verifier.Verify(proofBytes, digest)
+	metrics.Resolve(observer).ObserveZKVerification(time.Since(start))
+	if err != nil {
 		return fmt.Errorf("verify preimage proof: %w", err)
 	}
 

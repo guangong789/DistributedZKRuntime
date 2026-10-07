@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 )
 
 type JobState int
@@ -93,6 +97,7 @@ func (s *MemoryJobStores) ListByState(state JobState) ([]JobRecord, error) {
 }
 
 func (s *CoordinatorServer) recoverRunningJobs() error {
+	observer := metrics.Resolve(s.metrics)
 	if s.jobStore == nil {
 		return nil
 	}
@@ -109,6 +114,7 @@ func (s *CoordinatorServer) recoverRunningJobs() error {
 			return err
 		}
 
+		observer.RecoveryTransition(metrics.RecoveryStartup)
 		fmt.Printf(
 			"recovering job: id=%d attempt=%d worker=%s\n",
 			record.JobID,
@@ -154,6 +160,27 @@ func (s *CoordinatorServer) retryRecoveringJob(
 
 	spec := jobSpecFromRecord(record)
 
-	_, err := s.executeJob(ctx, spec)
+	observer := metrics.Resolve(s.metrics)
+	start := time.Now()
+	defer func() { observer.ObserveJobExecution(metrics.SourceRecovery, time.Since(start)) }()
+	s.mu.Lock()
+	initialAttempt := s.jobAttempts[record.JobID]
+	s.mu.Unlock()
+
+	_, err := s.executeJobFromSource(ctx, spec, metrics.SourceRecovery)
+	if err != nil {
+		observer.RecoveryExecutionFailed(recoveryFailureReason(err))
+		s.mu.Lock()
+		failedAttempt := s.jobAttempts[record.JobID]
+		s.mu.Unlock()
+		// Repair only a generation published by this recovery execution.
+		// Keep ownership until the repair finishes, including during shutdown.
+		if failedAttempt > initialAttempt {
+			if repairErr := s.restoreRecoveringJob(record.JobID, failedAttempt); repairErr != nil {
+				return errors.Join(err, fmt.Errorf("restore recovering job %d attempt %d: %w",
+					record.JobID, failedAttempt, repairErr))
+			}
+		}
+	}
 	return err
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,6 +46,15 @@ func (s *CoordinatorServer) executeJob(
 	ctx context.Context,
 	spec JobSpec,
 ) (*runtimepb.SubmitJobResponse, error) {
+	return s.executeJobFromSource(ctx, spec, metrics.SourceSubmit)
+}
+
+func (s *CoordinatorServer) executeJobFromSource(
+	ctx context.Context,
+	spec JobSpec,
+	source metrics.ExecutionSource,
+) (*runtimepb.SubmitJobResponse, error) {
+	observer := metrics.Resolve(s.metrics)
 	const maxAttempts = 2
 	leaseDuration := s.leaseDuration
 	if leaseDuration <= 0 {
@@ -63,13 +73,14 @@ func (s *CoordinatorServer) executeJob(
 			break
 		}
 
-		attemptID, err := s.startAttempt(
+		attemptID, err := s.startAttemptFromSource(
 			spec.JobID,
 			worker.ID,
 			leaseDuration,
 			spec.TaskType,
 			spec.Payload,
 			spec.TimeoutMs,
+			source,
 		)
 		if err != nil {
 			return nil, status.Errorf(
@@ -80,6 +91,13 @@ func (s *CoordinatorServer) executeJob(
 			)
 		}
 
+		attemptStart := time.Now()
+		// Durable lifecycle events are omitted in the legacy nil-store mode.
+		finishAttempt := func(outcome metrics.AttemptOutcome) {
+			if s.jobStore != nil {
+				observer.AttemptFinished(source, outcome, time.Since(attemptStart))
+			}
+		}
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		resultCh := make(chan dispatchResult, 1)
 
@@ -110,11 +128,13 @@ func (s *CoordinatorServer) executeJob(
 			cancelAttempt()
 
 			if err := ctx.Err(); err != nil {
+				finishAttempt(metrics.AttemptCancelled)
 				return nil, err
 			}
 
 			if result.err != nil {
 				lastErr = result.err
+				finishAttempt(metrics.AttemptRPCError)
 
 				fmt.Printf(
 					"attempt failed: job=%d attempt=%d worker=%s err=%v\n",
@@ -140,11 +160,14 @@ func (s *CoordinatorServer) executeJob(
 					attemptID,
 				)
 
+				observer.AttemptRejected(source, metrics.RejectFencing)
+				finishAttempt(metrics.AttemptFenced)
 				continue
 			}
 
 			finalState, err := jobStateFromStatus(resp.Status)
 			if err != nil {
+				finishAttempt(metrics.AttemptInvalidStatus)
 				return nil, status.Errorf(
 					codes.Internal,
 					"invalid worker status for job %d attempt %d: %v",
@@ -155,10 +178,11 @@ func (s *CoordinatorServer) executeJob(
 			}
 
 			if spec.TaskType == "zk_preimage_prove" && finalState == JobSucceeded {
-				if err := verifyZKPreimageResult(
+				if err := verifyZKPreimageResultWithMetrics(
 					s.preimageVerifier,
 					spec.Payload,
 					resp.Output,
+					observer,
 				); err != nil {
 					lastErr = fmt.Errorf(
 						"preimage proof verification failed for job %d attempt %d: %w",
@@ -167,6 +191,8 @@ func (s *CoordinatorServer) executeJob(
 						err,
 					)
 
+					observer.AttemptRejected(source, metrics.RejectProof)
+					finishAttempt(metrics.AttemptProofRejected)
 					fmt.Printf(
 						"attempt rejected: job=%d attempt=%d worker=%s err=%v\n",
 						spec.JobID,
@@ -191,6 +217,7 @@ func (s *CoordinatorServer) executeJob(
 
 			if s.jobStore != nil {
 				if err := s.jobStore.Save(record); err != nil {
+					finishAttempt(metrics.AttemptPersistenceError)
 					return nil, status.Errorf(
 						codes.Internal,
 						"failed to persist final state for job %d attempt %d: %v",
@@ -201,6 +228,17 @@ func (s *CoordinatorServer) executeJob(
 				}
 			}
 
+			terminalState, outcome := metrics.TerminalSucceeded, metrics.AttemptAccepted
+			switch finalState {
+			case JobFailed:
+				terminalState, outcome = metrics.TerminalFailed, metrics.AttemptTaskFailed
+			case JobCancelled:
+				terminalState, outcome = metrics.TerminalCancelled, metrics.AttemptTaskCancelled
+			}
+			if s.jobStore != nil {
+				observer.JobTerminal(source, terminalState)
+			}
+			finishAttempt(outcome)
 			return &runtimepb.SubmitJobResponse{
 				JobId:     resp.JobId,
 				Status:    resp.Status,
@@ -211,6 +249,7 @@ func (s *CoordinatorServer) executeJob(
 
 		case <-leaseTimer.C:
 			cancelAttempt()
+			finishAttempt(metrics.AttemptLeaseExpired)
 
 			lastErr = fmt.Errorf(
 				"lease expired for job %d attempt %d",
@@ -230,6 +269,7 @@ func (s *CoordinatorServer) executeJob(
 		case <-ctx.Done():
 			leaseTimer.Stop()
 			cancelAttempt()
+			finishAttempt(metrics.AttemptCancelled)
 
 			return nil, ctx.Err()
 		}

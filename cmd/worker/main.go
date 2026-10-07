@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
@@ -22,6 +23,8 @@ type WorkerService struct {
 
 	preimageProver *zk.PreimageProver
 	witnessStore   runtime.WitnessStore
+	// Configure before serving; implementations must support concurrent calls.
+	metrics metrics.Metrics
 }
 
 func buildTask(
@@ -92,6 +95,11 @@ func (s *WorkerService) ExecuteJob(
 			Output:    "",
 			Error:     err.Error(),
 		}, nil
+	}
+
+	if preimageTask, ok := task.(runtime.ZKPreimageTask); ok {
+		preimageTask.Metrics = metrics.Resolve(s.metrics)
+		task = preimageTask
 	}
 
 	timeout := time.Duration(req.TimeoutMs) * time.Millisecond

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 )
 
 type PreimageProver interface {
@@ -23,6 +25,8 @@ type ZKPreimageTask struct {
 	Payload      string
 	Prover       PreimageProver
 	WitnessStore WitnessStore
+	// Optional observer; configure before executing the task.
+	Metrics metrics.Metrics
 }
 
 func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
@@ -52,7 +56,9 @@ func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
 	default:
 	}
 
+	start := time.Now()
 	proofBytes, err := t.Prover.Prove(secret, digest)
+	metrics.Resolve(t.Metrics).ObserveZKProving(time.Since(start))
 	if err != nil {
 		return "", fmt.Errorf("prove preimage: %w", err)
 	}

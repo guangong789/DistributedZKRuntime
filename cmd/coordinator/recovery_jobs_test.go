@@ -285,6 +285,9 @@ func TestRetryRecoveringJobReleasesOwnershipAfterInfrastructureFailure(t *testin
 	if calls.Load() != 2 || s.jobAttempts[record.JobID] != 9 {
 		t.Fatalf("retry attempts: calls=%d attempt=%d, want two calls ending at 9", calls.Load(), s.jobAttempts[record.JobID])
 	}
+	want := record
+	want.AttemptID, want.WorkerID = 9, "failing-worker"
+	assertRecoveryRecord(t, s.jobStore, want)
 	if !s.claimJob(record.JobID) {
 		t.Fatal("failed recovery did not release JobID ownership")
 	}

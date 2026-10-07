@@ -299,7 +299,7 @@ func TestRecoveryPassContinuesAfterJobErrors(t *testing.T) {
 			wantFailedCalls := int32(0)
 			if scenario == "rpc failure" {
 				wantFailedCalls = 2
-				first.State, first.AttemptID, first.WorkerID = JobRunning, 9, "worker"
+				first.State, first.AttemptID, first.WorkerID = JobRecovering, 9, "worker"
 			}
 			if failedCalls.Load() != wantFailedCalls || successCalls.Load() != 1 {
 				t.Fatalf("calls: failed=%d success=%d", failedCalls.Load(), successCalls.Load())
@@ -587,7 +587,7 @@ func TestRecoveryPassCancellationDuringExecution(t *testing.T) {
 	if calls.Load() != 1 || s.jobAttempts[first.JobID] != 8 {
 		t.Fatal("cancellation retried or allocated an incorrect attempt")
 	}
-	first.State, first.AttemptID, first.WorkerID = JobRunning, 8, "worker"
+	first.State, first.AttemptID, first.WorkerID = JobRecovering, 8, "worker"
 	assertRecoveryRecord(t, inner, first)
 	assertRecoveryRecord(t, inner, second)
 	assertRecoveryOwnershipReleased(t, s, first.JobID)

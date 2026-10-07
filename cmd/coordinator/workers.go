@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"time"
 )
@@ -39,7 +40,7 @@ func (s *CoordinatorServer) RegisterWorker(
 		s.workers = make(map[string]WorkerInfo)
 	}
 
-	_, exists := s.workers[req.WorkerId]
+	previous, exists := s.workers[req.WorkerId]
 
 	s.workers[req.WorkerId] = WorkerInfo{
 		ID:       req.WorkerId,
@@ -53,6 +54,13 @@ func (s *CoordinatorServer) RegisterWorker(
 	}
 
 	s.mu.Unlock()
+
+	observer := metrics.Resolve(s.metrics)
+	if !exists {
+		observer.WorkerStateChanged(metrics.WorkerUnregistered, metrics.WorkerAlive, metrics.WorkerRegistration)
+	} else if previous.Status == WorkerDead {
+		observer.WorkerStateChanged(metrics.WorkerDead, metrics.WorkerAlive, metrics.WorkerRegistration)
+	}
 
 	// A nil or full channel disables this send; registration never waits for recovery.
 	select {
@@ -104,18 +112,23 @@ func (s *CoordinatorServer) Heartbeat(
 	req *runtimepb.HeartbeatRequest,
 ) (*runtimepb.HeartbeatResponse, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	worker, ok := s.workers[req.WorkerId]
 	if !ok {
+		s.mu.Unlock()
 		return &runtimepb.HeartbeatResponse{
 			Accepted: false,
 		}, nil
 	}
 
+	previousState := worker.Status
 	worker.LastSeen = time.Now()
 	worker.Status = WorkerAlive
 	s.workers[req.WorkerId] = worker
+	s.mu.Unlock()
+	if previousState == WorkerDead {
+		metrics.Resolve(s.metrics).WorkerStateChanged(metrics.WorkerDead, metrics.WorkerAlive, metrics.WorkerHeartbeat)
+	}
 
 	fmt.Printf(
 		"heartbeat: worker=%s last_seen=%v\n",
@@ -134,11 +147,12 @@ func (s *CoordinatorServer) checkWorkerLiveness(
 	now := time.Now()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	transitions := 0
 
 	for id, worker := range s.workers {
 		if now.Sub(worker.LastSeen) > timeout {
 			if worker.Status != WorkerDead {
+				transitions++
 				fmt.Printf(
 					"worker timed out: id=%s last_seen=%v\n",
 					worker.ID,
@@ -149,6 +163,11 @@ func (s *CoordinatorServer) checkWorkerLiveness(
 			worker.Status = WorkerDead
 			s.workers[id] = worker
 		}
+	}
+	s.mu.Unlock()
+	observer := metrics.Resolve(s.metrics)
+	for i := 0; i < transitions; i++ {
+		observer.WorkerStateChanged(metrics.WorkerAlive, metrics.WorkerDead, metrics.WorkerTimeout)
 	}
 }
 

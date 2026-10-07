@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
@@ -44,6 +45,8 @@ type CoordinatorServer struct {
 	recoveryReady chan struct{}
 
 	preimageVerifier PreimageProofVerifier
+	// Configure before serving; implementations must support concurrent calls.
+	metrics metrics.Metrics
 }
 
 func (s *CoordinatorServer) SubmitJob(
@@ -64,6 +67,10 @@ func (s *CoordinatorServer) SubmitJob(
 
 	defer s.releaseJob(req.JobId)
 
+	observer := metrics.Resolve(s.metrics)
+	start := time.Now()
+	defer func() { observer.ObserveJobExecution(metrics.SourceSubmit, time.Since(start)) }()
+	observer.JobSubmitted(metrics.SourceSubmit)
 	return s.executeJob(ctx, jobSpecFromRequest(req))
 }
 
