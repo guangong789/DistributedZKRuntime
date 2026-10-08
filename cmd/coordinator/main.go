@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	prommetrics "github.com/guangong789/DistributedZKRuntime/internal/metrics/prometheus"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -87,6 +89,7 @@ func main() {
 		"path to preimage verifying key",
 	)
 
+	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9090", "metrics HTTP listen address (required; loopback by default)")
 	flag.Parse()
 
 	store, err := NewSQLiteJobStore(*dbPath)
@@ -100,6 +103,11 @@ func main() {
 		log.Fatalf("failed to load preimage verifier: %v", err)
 	}
 
+	registry := prom.NewRegistry()
+	observer, err := prommetrics.New(registry)
+	if err != nil {
+		log.Fatalf("initialize metrics: %v", err)
+	}
 	coordinator := &CoordinatorServer{
 		workers:          make(map[string]WorkerInfo),
 		jobAttempts:      make(map[int64]int64),
@@ -109,7 +117,21 @@ func main() {
 		leaseDuration:    5 * time.Second,
 		recoveryReady:    make(chan struct{}, 1),
 		preimageVerifier: preimageVerifier,
+		metrics:          observer,
 	}
+
+	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)
+	if err != nil {
+		log.Fatalf("start metrics HTTP server: %v", err)
+	}
+	fmt.Printf("coordinator metrics listening on http://%s/metrics\n", metricsServer.Addr())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("metrics HTTP shutdown: %v", err)
+		}
+	}()
 
 	if err := coordinator.recoverRunningJobs(); err != nil {
 		log.Fatalf("failed to recover running jobs: %v", err)

@@ -178,7 +178,7 @@ func (s *CoordinatorServer) executeJobFromSource(
 			}
 
 			if spec.TaskType == "zk_preimage_prove" && finalState == JobSucceeded {
-				if err := verifyZKPreimageResultWithMetrics(
+				if err := verifyZKPreimageResult(
 					s.preimageVerifier,
 					spec.Payload,
 					resp.Output,

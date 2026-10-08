@@ -23,14 +23,6 @@ func verifyZKPreimageResult(
 	verifier PreimageProofVerifier,
 	payload string,
 	output string,
-) error {
-	return verifyZKPreimageResultWithMetrics(verifier, payload, output, metrics.NoopMetrics{})
-}
-
-func verifyZKPreimageResultWithMetrics(
-	verifier PreimageProofVerifier,
-	payload string,
-	output string,
 	observer metrics.Metrics,
 ) error {
 	if verifier == nil {

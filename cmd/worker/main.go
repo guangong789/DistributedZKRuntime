@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	prommetrics "github.com/guangong789/DistributedZKRuntime/internal/metrics/prometheus"
 	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -254,6 +259,7 @@ func main() {
 		"path to local private witness file",
 	)
 
+	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9091", "metrics HTTP listen address (required; loopback by default)")
 	flag.Parse()
 
 	// Load the proving capability once at worker startup.
@@ -267,17 +273,37 @@ func main() {
 		log.Fatalf("failed to load witness store: %v", err)
 	}
 
+	registry := prom.NewRegistry()
+	observer, err := prommetrics.New(registry)
+	if err != nil {
+		log.Fatalf("initialize metrics: %v", err)
+	}
+	workerService := &WorkerService{
+		preimageProver: preimageProver,
+		witnessStore:   witnessStore,
+		metrics:        observer,
+	}
+	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)
+	if err != nil {
+		log.Fatalf("start metrics HTTP server: %v", err)
+	}
+	fmt.Printf("worker metrics listening on http://%s/metrics\n", metricsServer.Addr())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("metrics HTTP shutdown: %v", err)
+		}
+	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	listener, err := net.Listen("tcp", *listenAddress)
 	if err != nil {
 		log.Fatalf("listen on %s: %v", *listenAddress, err)
 	}
 
 	server := grpc.NewServer()
-
-	workerService := &WorkerService{
-		preimageProver: preimageProver,
-		witnessStore:   witnessStore,
-	}
 
 	runtimepb.RegisterWorkerServiceServer(
 		server,
@@ -316,5 +342,6 @@ func main() {
 		*coordinatorAddress,
 	)
 
-	select {}
+	<-ctx.Done()
+	server.Stop()
 }
