@@ -133,7 +133,6 @@ func TestRecoveryLoopRunsAgainAfterLaterRegistration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan struct{})
-	go func() { s.runRecoveryLoop(ctx); close(done) }()
 	registerTestWorker(t, s, "worker", func(_ context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 		calls.Add(1)
 		if req.AttemptId != 8 || req.TaskType != record.TaskType || req.Payload != record.Payload || req.TimeoutMs != record.TimeoutMs {
@@ -141,6 +140,9 @@ func TestRecoveryLoopRunsAgainAfterLaterRegistration(t *testing.T) {
 		}
 		return successfulResult(req), nil
 	})
+	// Registration is ready before the new initial discovery scan.
+	go func() { s.runRecoveryLoop(ctx); close(done) }()
+
 	select {
 	case got := <-terminal:
 		if got.JobID != record.JobID || got.AttemptID != 8 {

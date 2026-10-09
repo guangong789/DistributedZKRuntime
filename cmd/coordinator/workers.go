@@ -62,11 +62,7 @@ func (s *CoordinatorServer) RegisterWorker(
 		observer.WorkerStateChanged(metrics.WorkerDead, metrics.WorkerAlive, metrics.WorkerRegistration)
 	}
 
-	// A nil or full channel disables this send; registration never waits for recovery.
-	select {
-	case s.recoveryReady <- struct{}{}:
-	default:
-	}
+	s.notifyRecoveryReady()
 
 	fmt.Printf(
 		"registered worker: id=%s address=%s\n",
@@ -128,6 +124,7 @@ func (s *CoordinatorServer) Heartbeat(
 	s.mu.Unlock()
 	if previousState == WorkerDead {
 		metrics.Resolve(s.metrics).WorkerStateChanged(metrics.WorkerDead, metrics.WorkerAlive, metrics.WorkerHeartbeat)
+		s.notifyRecoveryReady()
 	}
 
 	fmt.Printf(
@@ -139,6 +136,16 @@ func (s *CoordinatorServer) Heartbeat(
 	return &runtimepb.HeartbeatResponse{
 		Accepted: true,
 	}, nil
+}
+
+// notifyRecoveryReady runs after registry publication and outside s.mu.
+// A pending notification coalesces another wake-up; nil disables notification.
+// Registration and heartbeat never wait for a recovery pass to finish.
+func (s *CoordinatorServer) notifyRecoveryReady() {
+	select {
+	case s.recoveryReady <- struct{}{}:
+	default:
+	}
 }
 
 func (s *CoordinatorServer) checkWorkerLiveness(

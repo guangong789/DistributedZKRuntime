@@ -53,29 +53,16 @@ func (s *CoordinatorServer) restoreRecoveringJob(jobID, failedAttempt int64) err
 	return nil
 }
 
-// runRecoveryLoop processes registrations serially until shutdown. Readiness
-// signals coalesce while a pass is running.
-func (s *CoordinatorServer) runRecoveryLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		case <-s.recoveryReady:
-			if err := s.runRecoveryPass(ctx); err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				log.Printf("recovery pass failed: %v", err)
-			}
-		}
-	}
-}
-
 // runRecoveryPass processes one snapshot sequentially. Per-job errors are logged
 // and leave persistence to retryRecoveringJob; only listing failure or cancellation ends
 // the pass early. A nil return means the scan completed, not that every job ran.
 func (s *CoordinatorServer) runRecoveryPass(ctx context.Context) error {
+	return s.runScheduledRecoveryPass(ctx, nil)
+}
+
+// A standalone pass has no retained cooldown; the production loop supplies its
+// private schedule. Both entry points use the same execution and metrics path.
+func (s *CoordinatorServer) runScheduledRecoveryPass(ctx context.Context, schedule *recoverySchedule) error {
 	observer := metrics.Resolve(s.metrics)
 	start := time.Now()
 	outcome := metrics.PassCompleted
@@ -91,27 +78,59 @@ func (s *CoordinatorServer) runRecoveryPass(ctx context.Context) error {
 	records, err := s.jobStore.ListByState(JobRecovering)
 	if err != nil {
 		outcome = metrics.PassStoreError
+		if schedule != nil {
+			schedule.scan.failures = incrementRecoveryFailures(schedule.scan.failures)
+			schedule.scan.nextRetry = schedule.now().Add(recoveryBackoff(schedule.scan.failures, schedule.sample))
+		}
 		return err
 	}
+	if schedule != nil {
+		schedule.scan = retryEntry{}
+		schedule.reconcile(records)
+	}
+	seen := make(map[int64]bool, len(records))
 	for _, snapshot := range records {
+		if seen[snapshot.JobID] {
+			continue
+		}
+		seen[snapshot.JobID] = true
 		if err := ctx.Err(); err != nil {
 			outcome = metrics.PassCancelled
 			return err
+		}
+		if schedule != nil && !schedule.eligible(snapshot) {
+			continue
 		}
 		current, ok, err := s.jobStore.Load(snapshot.JobID)
 		if err != nil {
 			outcome = metrics.PassCompletedWithErrors
 			log.Printf("recovery load failed: job=%d err=%v", snapshot.JobID, err)
+			if schedule != nil {
+				schedule.recheck(snapshot)
+			}
 			continue
 		}
 		if !ok || current.State != JobRecovering || current.AttemptID != snapshot.AttemptID {
+			if schedule != nil {
+				delete(schedule.entries, snapshot.JobID)
+				if ok && current.State == JobRecovering {
+					schedule.recheck(current)
+				}
+			}
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			outcome = metrics.PassCancelled
 			return err
 		}
-		if err := s.retryRecoveringJob(ctx, current); err != nil {
+		result, err := s.retryRecoveringJobResult(ctx, current)
+		if schedule != nil && ctx.Err() == nil {
+			if loadErr := schedule.completed(s.jobStore, current, result, err); loadErr != nil {
+				outcome = metrics.PassCompletedWithErrors
+				log.Printf("recovery reconciliation failed: job=%d err=%v", current.JobID, loadErr)
+			}
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				outcome = metrics.PassCancelled
 				// Preserve a repair failure joined with the cancellation error.

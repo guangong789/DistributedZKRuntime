@@ -43,7 +43,7 @@ type CoordinatorServer struct {
 	onDispatchDone func(jobID, attemptID int64)
 
 	jobStore JobStore
-	// Configure before serving. Registrations coalesce readiness notifications.
+	// Configure before serving. Worker readiness notifications coalesce.
 	recoveryReady chan struct{}
 
 	preimageVerifier PreimageProofVerifier

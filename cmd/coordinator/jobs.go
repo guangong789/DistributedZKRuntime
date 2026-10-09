@@ -158,15 +158,32 @@ func (s *CoordinatorServer) retryRecoveringJob(
 	ctx context.Context,
 	record JobRecord,
 ) error {
+	_, err := s.retryRecoveringJobResult(ctx, record)
+	return err
+}
+
+// recoveryExecution records provenance before releasing ownership. A nil error
+// alone does not imply execution: a stale snapshot is deliberately skipped.
+type recoveryExecution struct {
+	executed     bool
+	terminal     bool
+	repairFailed bool
+	generation   int64
+	specHash     [32]byte
+}
+
+func (s *CoordinatorServer) retryRecoveringJobResult(ctx context.Context, record JobRecord) (result recoveryExecution, err error) {
+	result.generation = record.AttemptID
+	result.specHash = recoverySpecHash(record)
 	if record.State != JobRecovering {
-		return fmt.Errorf(
+		return result, fmt.Errorf(
 			"job %d is not recovering",
 			record.JobID,
 		)
 	}
 
 	if !s.claimJob(record.JobID) {
-		return fmt.Errorf(
+		return result, fmt.Errorf(
 			"job %d is already active",
 			record.JobID,
 		)
@@ -178,14 +195,15 @@ func (s *CoordinatorServer) retryRecoveringJob(
 	if s.jobStore != nil {
 		current, ok, err := s.jobStore.Load(record.JobID)
 		if err != nil {
-			return err
+			return result, err
 		}
 		if !ok || current.State != JobRecovering || current.AttemptID != record.AttemptID {
-			return nil
+			return result, nil
 		}
 		record = current
 	}
 
+	result.specHash = recoverySpecHash(record)
 	spec := jobSpecFromRecord(record)
 
 	observer := metrics.Resolve(s.metrics)
@@ -195,7 +213,12 @@ func (s *CoordinatorServer) retryRecoveringJob(
 	initialAttempt := s.jobAttempts[record.JobID]
 	s.mu.Unlock()
 
-	_, err := s.executeJobFromSource(ctx, spec, metrics.SourceRecovery)
+	result.executed = true
+	response, err := s.executeJobFromSource(ctx, spec, metrics.SourceRecovery)
+	result.terminal = err == nil
+	if result.terminal {
+		result.generation = response.AttemptId
+	}
 	if err != nil {
 		observer.RecoveryExecutionFailed(recoveryFailureReason(err))
 		s.mu.Lock()
@@ -204,11 +227,13 @@ func (s *CoordinatorServer) retryRecoveringJob(
 		// Repair only a generation published by this recovery execution.
 		// Keep ownership until the repair finishes, including during shutdown.
 		if failedAttempt > initialAttempt {
+			result.generation = failedAttempt
 			if repairErr := s.restoreRecoveringJob(record.JobID, failedAttempt); repairErr != nil {
-				return errors.Join(err, fmt.Errorf("restore recovering job %d attempt %d: %w",
+				result.repairFailed = true
+				return result, errors.Join(err, fmt.Errorf("restore recovering job %d attempt %d: %w",
 					record.JobID, failedAttempt, repairErr))
 			}
 		}
 	}
-	return err
+	return result, err
 }

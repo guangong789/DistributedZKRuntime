@@ -461,8 +461,6 @@ func TestPrometheusMetricsZKRecovery(t *testing.T) {
 	assertPublicRecoveryPayload(t, recovering1.Payload)
 	loopCtx, cancelLoop := context.WithCancel(context.Background())
 	loopDone := make(chan struct{})
-	go func() { s.runRecoveryLoop(loopCtx); close(loopDone) }()
-	t.Cleanup(func() { cancelLoop(); <-loopDone })
 	client := startTestCoordinator(t, s)
 	var calls atomic.Int32
 	startWorkerFailureServer(t, client, "recovered-worker", func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
@@ -473,6 +471,10 @@ func TestPrometheusMetricsZKRecovery(t *testing.T) {
 		}
 		return fixture.execute(ctx, req, workerMetrics.backend)
 	})
+	// Make readiness deterministic before initial discovery; preserve exact metrics.
+	go func() { s.runRecoveryLoop(loopCtx); close(loopDone) }()
+	t.Cleanup(func() { cancelLoop(); <-loopDone })
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	select {
