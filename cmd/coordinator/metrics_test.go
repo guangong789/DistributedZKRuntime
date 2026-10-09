@@ -419,10 +419,15 @@ func TestMetricsAttemptFinishedOnceOnAbandonment(t *testing.T) {
 			if errors.Is(err, context.Canceled) {
 				gotCode = codes.Canceled
 			}
+			wantTerminals := 0
+			if tc.name == "cancel" {
+				wantTerminals = 1
+			}
 			if resp != nil || gotCode != tc.code || observer.count("started", "") != tc.starts ||
 				observer.count("finished", "") != tc.starts ||
 				observer.count("finished", string(tc.outcome)) != tc.starts ||
-				observer.count("terminal", "") != 0 {
+				observer.count("terminal", "") != wantTerminals ||
+				observer.count("terminal", string(metrics.TerminalCancelled)) != wantTerminals {
 				t.Fatalf("abandonment response=%v error=%v events=%+v", resp, err, observer.snapshot())
 			}
 			waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)

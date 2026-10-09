@@ -160,7 +160,11 @@ func (s *CoordinatorServer) isLeaseCurrent(
 ) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.isLeaseCurrentLocked(jobID, attemptID)
+}
 
+// isLeaseCurrentLocked requires s.mu to be held.
+func (s *CoordinatorServer) isLeaseCurrentLocked(jobID, attemptID int64) bool {
 	lease, ok := s.leases[jobID]
 	if !ok {
 		return false

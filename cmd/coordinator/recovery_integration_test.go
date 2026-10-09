@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
@@ -262,8 +263,14 @@ func TestSQLiteRestartRecoversJobAfterWorkerReregistration(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
 	submitDone := make(chan error, 1)
+	// Model a crash before SubmitJob's cancellation finalization can run.
+	// Cancelling ctxA cleans up the test RPC, rather than cancelling the job.
+	if !coordinatorA.claimJob(jobID) {
+		t.Fatal("cannot claim old execution")
+	}
 	go func() {
-		_, err := coordinatorA.SubmitJob(ctxA, request)
+		defer coordinatorA.releaseJob(jobID)
+		_, err := coordinatorA.executeJobFromSource(ctxA, jobSpecFromRequest(request), metrics.SourceSubmit)
 		submitDone <- err
 	}()
 	select {

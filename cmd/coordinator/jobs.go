@@ -96,6 +96,34 @@ func (s *MemoryJobStores) ListByState(state JobState) ([]JobRecord, error) {
 	return records, nil
 }
 
+// persistSubmitCancellation runs while the submit session still owns JobID.
+// initialAttempt is the memory generation before this session executed; only
+// an attempt published afterward belongs to its cancellation finalization.
+// Reload/check/Save uses the same local mutex ordering as publishAttempt and
+// persistTerminalResult. Metrics are emitted by the caller after unlocking.
+func (s *CoordinatorServer) persistSubmitCancellation(jobID, initialAttempt int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, owned := s.activeJobs[jobID]
+	attempt := s.jobAttempts[jobID]
+	if s.jobStore == nil || !owned || attempt <= initialAttempt {
+		return false, nil
+	}
+	current, ok, err := s.jobStore.Load(jobID)
+	if err != nil {
+		return false, fmt.Errorf("load current job: %w", err)
+	}
+	if !ok || current.JobID != jobID || current.State != JobRunning || current.AttemptID != attempt {
+		return false, nil
+	}
+	current.State = JobCancelled
+	if err := s.jobStore.Save(current); err != nil {
+		return false, fmt.Errorf("save cancelled job: %w", err)
+	}
+	return true, nil
+}
+
 func (s *CoordinatorServer) recoverRunningJobs() error {
 	observer := metrics.Resolve(s.metrics)
 	if s.jobStore == nil {

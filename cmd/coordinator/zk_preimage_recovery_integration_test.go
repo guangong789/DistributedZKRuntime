@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	runtime "github.com/guangong789/DistributedZKRuntime/internal/runtime"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
@@ -110,10 +111,16 @@ func TestPreimageJobRecoversAcrossSQLiteCoordinatorRestart(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
 	oldSubmission := make(chan error, 1)
+	// Model a crash before SubmitJob's cancellation finalization can run.
+	// Cancelling ctxA cleans up the test RPC, rather than cancelling the job.
+	if !coordinatorA.claimJob(jobID) {
+		t.Fatal("cannot claim old execution")
+	}
 	go func() {
-		_, err := coordinatorA.SubmitJob(ctxA, &runtimepb.SubmitJobRequest{
-			JobId: jobID, TaskType: "zk_preimage_prove", Payload: payload, TimeoutMs: timeoutMs,
-		})
+		defer coordinatorA.releaseJob(jobID)
+		_, err := coordinatorA.executeJobFromSource(ctxA, JobSpec{
+			JobID: jobID, TaskType: "zk_preimage_prove", Payload: payload, TimeoutMs: timeoutMs,
+		}, metrics.SourceSubmit)
 		oldSubmission <- err
 	}()
 	select {

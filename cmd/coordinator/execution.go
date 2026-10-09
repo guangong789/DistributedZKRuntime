@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
@@ -39,14 +41,33 @@ func dispatchJob(
 	return client.ExecuteJob(ctx, req)
 }
 
-// executeJob runs attempts for an immutable specification.
+// executeJob runs normal submissions and finalizes parent cancellation durably.
 // The caller must hold claimJob ownership for spec.JobID until this returns.
 // Ownership stays at the entry point; this method neither claims nor releases it.
 func (s *CoordinatorServer) executeJob(
 	ctx context.Context,
 	spec JobSpec,
 ) (*runtimepb.SubmitJobResponse, error) {
-	return s.executeJobFromSource(ctx, spec, metrics.SourceSubmit)
+	s.mu.Lock()
+	initialAttempt := s.jobAttempts[spec.JobID]
+	s.mu.Unlock()
+
+	resp, err := s.executeJobFromSource(ctx, spec, metrics.SourceSubmit)
+	contextErr := ctx.Err()
+	// An accepted terminal result wins if cancellation arrives during/after Save.
+	if err == nil || contextErr == nil {
+		return resp, err
+	}
+	persisted, persistenceErr := s.persistSubmitCancellation(spec.JobID, initialAttempt)
+	if persistenceErr != nil {
+		// A cancelled RPC client may no longer receive the returned store error.
+		log.Printf("submit cancellation persistence failed: job=%d err=%v", spec.JobID, persistenceErr)
+		return nil, errors.Join(contextErr, fmt.Errorf("persist cancellation for job %d: %w", spec.JobID, persistenceErr))
+	}
+	if persisted {
+		metrics.Resolve(s.metrics).JobTerminal(metrics.SourceSubmit, metrics.TerminalCancelled)
+	}
+	return nil, contextErr
 }
 
 func (s *CoordinatorServer) executeJobFromSource(
@@ -215,17 +236,30 @@ func (s *CoordinatorServer) executeJobFromSource(
 				TimeoutMs: spec.TimeoutMs,
 			}
 
-			if s.jobStore != nil {
-				if err := s.jobStore.Save(record); err != nil {
-					finishAttempt(metrics.AttemptPersistenceError)
-					return nil, status.Errorf(
-						codes.Internal,
-						"failed to persist final state for job %d attempt %d: %v",
-						spec.JobID,
-						attemptID,
-						err,
-					)
+			eligible, err := s.persistTerminalResult(ctx, record)
+			if !eligible {
+				if err != nil {
+					finishAttempt(metrics.AttemptCancelled)
+					return nil, err
 				}
+				lastErr = fmt.Errorf(
+					"stale, expired, or mismatched result for job %d attempt %d",
+					spec.JobID,
+					attemptID,
+				)
+				observer.AttemptRejected(source, metrics.RejectFencing)
+				finishAttempt(metrics.AttemptFenced)
+				continue
+			}
+			if err != nil {
+				finishAttempt(metrics.AttemptPersistenceError)
+				return nil, status.Errorf(
+					codes.Internal,
+					"failed to persist final state for job %d attempt %d: %v",
+					spec.JobID,
+					attemptID,
+					err,
+				)
 			}
 
 			terminalState, outcome := metrics.TerminalSucceeded, metrics.AttemptAccepted
@@ -282,4 +316,28 @@ func (s *CoordinatorServer) executeJobFromSource(
 		return nil, status.Errorf(codes.Unavailable, "job submission failed: %v", lastErr)
 	}
 	return nil, status.Error(codes.Unavailable, "no alive workers available")
+}
+
+// persistTerminalResult returns eligibility at the final check, plus any context
+// or Save error. An ineligible result with no error is fenced; one with an error
+// is cancelled. Eligible results can still fail persistence.
+//
+// As in publishAttempt, s.mu excludes local generation/lease changes through
+// Save. JobStore must not reenter the coordinator while saving. Verification
+// and metrics run outside this critical section. Time and cancellation can
+// still advance during Save; this is not a commit-before-deadline guarantee.
+func (s *CoordinatorServer) persistTerminalResult(ctx context.Context, record JobRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !s.isLeaseCurrentLocked(record.JobID, record.AttemptID) {
+		return false, nil
+	}
+	if s.jobStore != nil {
+		return true, s.jobStore.Save(record)
+	}
+	return true, nil
 }
