@@ -36,6 +36,15 @@ func newTestPreimageProver(t *testing.T) (*zk.PreimageProver, *zk.PreimageVerifi
 	return prover, verifier
 }
 
+func newTestProvingLimiter(t *testing.T) *runtime.ProvingLimiter {
+	t.Helper()
+	limiter, err := runtime.NewProvingLimiter(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return limiter
+}
+
 func preimageTestPayload(t *testing.T, witnessRef string, digest fr.Element) string {
 	t.Helper()
 	var digestInt big.Int
@@ -112,6 +121,7 @@ func TestWorkerExecuteJobRunsZKPreimageTask(t *testing.T) {
 	resp, err := (&WorkerService{
 		preimageProver: prover,
 		witnessStore:   store,
+		provingLimiter: newTestProvingLimiter(t),
 	}).ExecuteJob(context.Background(), &runtimepb.ExecuteJobRequest{
 		JobId:     602,
 		AttemptId: 8,

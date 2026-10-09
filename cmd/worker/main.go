@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -18,7 +19,9 @@ import (
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	prom "github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	runtime "github.com/guangong789/DistributedZKRuntime/internal/runtime"
 )
@@ -28,6 +31,8 @@ type WorkerService struct {
 
 	preimageProver *zk.PreimageProver
 	witnessStore   runtime.WitnessStore
+	// Configure one shared limiter before serving ZK requests.
+	provingLimiter *runtime.ProvingLimiter
 	// Configure before serving; implementations must support concurrent calls.
 	metrics metrics.Metrics
 }
@@ -103,6 +108,10 @@ func (s *WorkerService) ExecuteJob(
 	}
 
 	if preimageTask, ok := task.(runtime.ZKPreimageTask); ok {
+		if s.provingLimiter == nil {
+			return nil, status.Error(codes.FailedPrecondition, "proving limiter is not configured")
+		}
+		preimageTask.Limiter = s.provingLimiter
 		preimageTask.Metrics = metrics.Resolve(s.metrics)
 		task = preimageTask
 	}
@@ -120,6 +129,9 @@ func (s *WorkerService) ExecuteJob(
 	}
 
 	result := runtime.ExecuteJob(jobCtx, job)
+	if errors.Is(result.Err, runtime.ErrProvingBusy) {
+		return nil, status.Error(codes.ResourceExhausted, result.Err.Error())
+	}
 
 	fmt.Printf(
 		"executing job: id=%d attempt=%d type=%s\n",
@@ -260,7 +272,12 @@ func main() {
 	)
 
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9091", "metrics HTTP listen address (required; loopback by default)")
+	maxConcurrentProofs := flag.Int("max-concurrent-proofs", 1, "maximum simultaneous preimage proving calls (positive)")
 	flag.Parse()
+	provingLimiter, err := runtime.NewProvingLimiter(*maxConcurrentProofs)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Load the proving capability once at worker startup.
 	preimageProver, err := zk.LoadPreimageProver(*provingKeyPath)
@@ -281,6 +298,7 @@ func main() {
 	workerService := &WorkerService{
 		preimageProver: preimageProver,
 		witnessStore:   witnessStore,
+		provingLimiter: provingLimiter,
 		metrics:        observer,
 	}
 	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)

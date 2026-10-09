@@ -8,7 +8,9 @@ import (
 	"math/big"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
@@ -171,4 +173,80 @@ func TestZKPreimageTaskPropagatesProverError(t *testing.T) {
 	if prover.calls != 1 {
 		t.Fatalf("prover called %d times, want 1", prover.calls)
 	}
+}
+
+// Characterizes current behavior, not a desired acceptance contract: the
+// synchronous prover cannot be interrupted, and Execute does not check the
+// task context again when Prove returns. The bytes here are a test stand-in,
+// not a cryptographically verified proof.
+func TestZKPreimageTaskReturnsProofAfterTaskDeadline(t *testing.T) {
+	store := NewMemoryWitnessStore()
+	store.Put("secret-001", 42)
+	limiter, err := NewProvingLimiter(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// This is the same task context construction used by Worker ExecuteJob;
+	// it does not represent the parent RPC deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	var output string
+	var executeErr error
+	calls := 0
+	task := ZKPreimageTask{
+		Payload:      preimageTaskPayload(t, "secret-001", decimalPreimageDigest(zk.ComputePreimageDigest(42))),
+		WitnessStore: store,
+		Limiter:      limiter,
+		Prover: metricTestProver{prove: func(int64, fr.Element) ([]byte, error) {
+			calls++
+			close(started)
+			<-release
+			return []byte("controlled proof"), nil
+		}},
+	}
+	t.Cleanup(func() {
+		cancel()
+		unblock()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("task did not finish during cleanup")
+		}
+	})
+	go func() {
+		defer close(finished)
+		output, executeErr = task.Execute(ctx)
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("test requires Prove to start before the task deadline")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("task deadline passed before the proving barrier: %v", err)
+	}
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("task context error=%v, want DeadlineExceeded", ctx.Err())
+	}
+	select {
+	case <-finished:
+		t.Fatal("Execute returned while its synchronous prover was still blocked")
+	default:
+	}
+	unblock()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not finish after releasing Prove")
+	}
+	proof, err := base64.StdEncoding.DecodeString(output)
+	if executeErr != nil || err != nil || string(proof) != "controlled proof" || calls != 1 {
+		t.Fatalf("observed task result: output=%q error=%v decode=%v calls=%d", output, executeErr, err, calls)
+	}
+	t.Log("Prove called once; task context expired; Execute still returned Base64 proof with nil error")
 }

@@ -25,6 +25,8 @@ type ZKPreimageTask struct {
 	Payload      string
 	Prover       PreimageProver
 	WitnessStore WitnessStore
+	// Optional for standalone tasks; Worker injects its shared process limiter.
+	Limiter *ProvingLimiter
 	// Optional observer; configure before executing the task.
 	Metrics metrics.Metrics
 }
@@ -54,6 +56,16 @@ func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
 	case <-ctx.Done():
 		return "", ctx.Err()
 	default:
+	}
+	if t.Limiter != nil {
+		if !t.Limiter.TryAcquire() {
+			return "", ErrProvingBusy
+		}
+		// Cancellation cannot release capacity while synchronous Prove runs.
+		defer t.Limiter.Release()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 	}
 
 	start := time.Now()

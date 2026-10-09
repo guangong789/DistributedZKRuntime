@@ -24,7 +24,7 @@ func TestWorkerInjectsProvingMetricsWithoutChangingProof(t *testing.T) {
 	store := runtime.NewMemoryWitnessStore()
 	store.Put("secret-001", 42)
 	observer := &workerProvingMetrics{durations: make(chan time.Duration, 1)}
-	worker := &WorkerService{preimageProver: prover, witnessStore: store, metrics: observer}
+	worker := &WorkerService{preimageProver: prover, witnessStore: store, provingLimiter: newTestProvingLimiter(t), metrics: observer}
 	digest := zk.ComputePreimageDigest(42)
 	resp, err := worker.ExecuteJob(context.Background(), &runtimepb.ExecuteJobRequest{
 		JobId: 906, AttemptId: 2, TaskType: "zk_preimage_prove",
