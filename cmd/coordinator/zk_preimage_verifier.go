@@ -2,21 +2,16 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 )
 
 type PreimageProofVerifier interface {
 	Verify(proofBytes []byte, digest fr.Element) error
-}
-
-type zkPreimagePublicInput struct {
-	Digest string `json:"digest"`
 }
 
 func verifyZKPreimageResult(
@@ -29,20 +24,10 @@ func verifyZKPreimageResult(
 		return fmt.Errorf("preimage verifier is not configured")
 	}
 
-	var publicInput zkPreimagePublicInput
-
-	if err := json.Unmarshal([]byte(payload), &publicInput); err != nil {
-		return fmt.Errorf("decode preimage public input: %w", err)
+	publicInput, err := zk.ParsePreimagePublicPayload(payload)
+	if err != nil {
+		return err
 	}
-
-	var digestInt big.Int
-
-	if _, ok := digestInt.SetString(publicInput.Digest, 10); !ok {
-		return fmt.Errorf("invalid preimage digest: %q", publicInput.Digest)
-	}
-
-	var digest fr.Element
-	digest.SetBigInt(&digestInt)
 
 	proofBytes, err := base64.StdEncoding.DecodeString(output)
 	if err != nil {
@@ -50,7 +35,7 @@ func verifyZKPreimageResult(
 	}
 
 	start := time.Now()
-	err = verifier.Verify(proofBytes, digest)
+	err = verifier.Verify(proofBytes, publicInput.Digest)
 	metrics.Resolve(observer).ObserveZKVerification(time.Since(start))
 	if err != nil {
 		return fmt.Errorf("verify preimage proof: %w", err)

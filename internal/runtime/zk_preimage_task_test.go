@@ -250,3 +250,25 @@ func TestZKPreimageTaskReturnsProofAfterTaskDeadline(t *testing.T) {
 	}
 	t.Log("Prove called once; task context expired; Execute still returned Base64 proof with nil error")
 }
+
+func TestZKPreimageTaskRejectsPrivatePayloadBeforeWitnessOrProve(t *testing.T) {
+	prover := &countingPreimageProver{}
+	for _, payload := range []string{
+		`{"witness_ref":"secret-001","digest":"1","secret":"PRIVATE_VALUE_MARKER"}`,
+		`{"witness_ref":"secret-001","digest":"1","digest":"2"}`,
+		`{"Witness_Ref":"secret-001","digest":"1"}`,
+		`{"witness_ref":null,"digest":"1"}`,
+		`{"witness_ref":"secret-001","digest":"PRIVATE_VALUE_MARKER"}`,
+		strings.Repeat("x", zk.MaxPreimagePayloadBytes+1),
+	} {
+		// Nil WitnessStore deliberately proves rejection precedes witness lookup.
+		task := ZKPreimageTask{Payload: payload, Prover: prover}
+		output, err := task.Execute(context.Background())
+		if !errors.Is(err, zk.ErrInvalidPreimagePayload) || output != "" || prover.calls != 0 {
+			t.Fatal("invalid payload reached witness/prover path")
+		}
+		if strings.Contains(err.Error(), "PRIVATE_VALUE_MARKER") {
+			t.Fatal("payload error disclosed private value")
+		}
+	}
+}

@@ -136,6 +136,14 @@ func (s *CoordinatorServer) recoverRunningJobs() error {
 	}
 
 	for _, record := range records {
+		spec, err := validateJobSpec(jobSpecFromRecord(record))
+		if err != nil {
+			// Keep unsafe legacy rows untouched for explicit operator correction.
+			// Neither redispatch nor resave their original potentially private JSON.
+			fmt.Printf("startup recovery rejected job %d: invalid ZK public payload\n", record.JobID)
+			continue
+		}
+		record.Payload = spec.Payload
 		record.State = JobRecovering
 
 		if err := s.jobStore.Save(record); err != nil {

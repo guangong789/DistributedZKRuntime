@@ -7,6 +7,8 @@ import (
 	"log"
 	"math/rand/v2"
 	"time"
+
+	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 )
 
 // retryEntry contains no task payload. The fingerprint detects replacement even
@@ -30,6 +32,13 @@ func newRecoverySchedule() *recoverySchedule {
 }
 
 func recoverySpecHash(r JobRecord) [32]byte {
+	// Equivalent public JSON/digest encodings are the same task. This also keeps
+	// failure history when a valid legacy record is normalized by execution.
+	if r.TaskType == "zk_preimage_prove" {
+		if payload, err := zk.ParsePreimagePublicPayload(r.Payload); err == nil {
+			r.Payload = payload.CanonicalJSON
+		}
+	}
 	return sha256.Sum256([]byte(fmt.Sprintf("%q %q %d", r.TaskType, r.Payload, r.TimeoutMs)))
 }
 

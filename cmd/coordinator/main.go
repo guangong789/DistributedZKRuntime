@@ -59,6 +59,10 @@ func (s *CoordinatorServer) SubmitJob(
 		return nil, err
 	}
 
+	spec, err := validateJobSpec(jobSpecFromRequest(req))
+	if err != nil {
+		return nil, err
+	}
 	if !s.claimJob(req.JobId) {
 		return nil, status.Errorf(
 			codes.AlreadyExists,
@@ -73,7 +77,7 @@ func (s *CoordinatorServer) SubmitJob(
 	start := time.Now()
 	defer func() { observer.ObserveJobExecution(metrics.SourceSubmit, time.Since(start)) }()
 	observer.JobSubmitted(metrics.SourceSubmit)
-	return s.executeJob(ctx, jobSpecFromRequest(req))
+	return s.executeJob(ctx, spec)
 }
 
 func main() {

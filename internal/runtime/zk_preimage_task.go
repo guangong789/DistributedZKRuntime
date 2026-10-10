@@ -3,23 +3,19 @@ package runtime
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 )
 
 type PreimageProver interface {
 	Prove(secret int64, digest fr.Element) ([]byte, error)
 }
 
-type ZKPreimagePayload struct {
-	WitnessRef string `json:"witness_ref"`
-	Digest     string `json:"digest"`
-}
+type ZKPreimagePayload = zk.PreimagePublicPayload
 
 type ZKPreimageTask struct {
 	Payload      string
@@ -32,25 +28,14 @@ type ZKPreimageTask struct {
 }
 
 func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
-	var payload ZKPreimagePayload
-
-	if err := json.Unmarshal([]byte(t.Payload), &payload); err != nil {
-		return "", fmt.Errorf("decode preimage payload: %w", err)
+	payload, err := zk.ParsePreimagePublicPayload(t.Payload)
+	if err != nil {
+		return "", err
 	}
-
 	secret, ok := t.WitnessStore.Get(payload.WitnessRef)
 	if !ok {
-		return "", fmt.Errorf("witness not found: %s", payload.WitnessRef)
+		return "", fmt.Errorf("witness not found")
 	}
-
-	var digestInt big.Int
-
-	if _, ok := digestInt.SetString(payload.Digest, 10); !ok {
-		return "", fmt.Errorf("invalid digest: %q", payload.Digest)
-	}
-
-	var digest fr.Element
-	digest.SetBigInt(&digestInt)
 
 	select {
 	case <-ctx.Done():
@@ -69,7 +54,7 @@ func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
 	}
 
 	start := time.Now()
-	proofBytes, err := t.Prover.Prove(secret, digest)
+	proofBytes, err := t.Prover.Prove(secret, payload.Digest)
 	metrics.Resolve(t.Metrics).ObserveZKProving(time.Since(start))
 	if err != nil {
 		return "", fmt.Errorf("prove preimage: %w", err)

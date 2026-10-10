@@ -75,6 +75,15 @@ func (s *CoordinatorServer) executeJobFromSource(
 	spec JobSpec,
 	source metrics.ExecutionSource,
 ) (*runtimepb.SubmitJobResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var err error
+	spec, err = validateJobSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+
 	observer := metrics.Resolve(s.metrics)
 	const maxAttempts = 2
 	leaseDuration := s.leaseDuration
