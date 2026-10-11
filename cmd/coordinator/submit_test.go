@@ -12,6 +12,8 @@ import (
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -26,6 +28,7 @@ func (w *testWorker) ExecuteJob(ctx context.Context, req *runtimepb.ExecuteJobRe
 
 func registerTestWorker(t *testing.T, s *CoordinatorServer, id string, execute func(context.Context, *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error), options ...grpc.ServerOption) {
 	t.Helper()
+	useTestWorkerTransport(s)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +48,19 @@ func successfulResult(req *runtimepb.ExecuteJobRequest) *runtimepb.ExecuteJobRes
 }
 
 func newTestCoordinator() *CoordinatorServer {
-	return &CoordinatorServer{jobStore: NewMemoryJobStore()}
+	s := &CoordinatorServer{jobStore: NewMemoryJobStore()}
+	useTestWorkerTransport(s)
+	return s
+}
+
+// Isolated business tests explicitly opt into their local plaintext fixtures.
+// Production dispatch has no nil/default/insecure fallback.
+func useTestWorkerTransport(s *CoordinatorServer) {
+	if s.workerCredentials == nil {
+		s.workerCredentials = func(WorkerInfo) (credentials.TransportCredentials, error) {
+			return insecure.NewCredentials(), nil
+		}
+	}
 }
 
 func TestSubmitRetryAndFencing(t *testing.T) {

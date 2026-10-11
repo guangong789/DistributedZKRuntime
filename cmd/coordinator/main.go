@@ -17,8 +17,8 @@ import (
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	prom "github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 )
 
@@ -49,6 +49,9 @@ type CoordinatorServer struct {
 	preimageVerifier PreimageProofVerifier
 	// Configure before serving; implementations must support concurrent calls.
 	metrics metrics.Metrics
+	// Configure before serving. Nil fails closed; isolated tests may explicitly
+	// inject their own transport. Production binds TLS to each selected Worker.
+	workerCredentials func(WorkerInfo) (credentials.TransportCredentials, error)
 }
 
 func (s *CoordinatorServer) SubmitJob(
@@ -94,7 +97,12 @@ func main() {
 	)
 
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9090", "metrics HTTP listen address (required; loopback by default)")
+	security := coordinatorSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	transport, err := security.load()
+	if err != nil {
+		log.Fatalf("coordinator mTLS configuration: %v", err)
+	}
 
 	store, err := NewSQLiteJobStore(*dbPath)
 	if err != nil {
@@ -113,15 +121,16 @@ func main() {
 		log.Fatalf("initialize metrics: %v", err)
 	}
 	coordinator := &CoordinatorServer{
-		workers:          make(map[string]WorkerInfo),
-		jobAttempts:      make(map[int64]int64),
-		leases:           make(map[int64]JobLease),
-		activeJobs:       make(map[int64]struct{}),
-		jobStore:         store,
-		leaseDuration:    5 * time.Second,
-		recoveryReady:    make(chan struct{}, 1),
-		preimageVerifier: preimageVerifier,
-		metrics:          observer,
+		workers:           make(map[string]WorkerInfo),
+		jobAttempts:       make(map[int64]int64),
+		leases:            make(map[int64]JobLease),
+		activeJobs:        make(map[int64]struct{}),
+		jobStore:          store,
+		leaseDuration:     5 * time.Second,
+		recoveryReady:     make(chan struct{}, 1),
+		preimageVerifier:  preimageVerifier,
+		metrics:           observer,
+		workerCredentials: transport.workerCredentials,
 	}
 
 	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)
@@ -146,14 +155,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	server := grpc.NewServer()
+	server := transport.newServer(coordinator)
 
-	runtimepb.RegisterCoordinatorServiceServer(
-		server,
-		coordinator,
-	)
-
-	fmt.Println("coordinator listening on :50050")
+	fmt.Println("coordinator mTLS listening on :50050")
 
 	go coordinator.runLivenessMonitor(
 		time.Second,

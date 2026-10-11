@@ -49,6 +49,7 @@ func startTestCoordinator(
 	coordinator *CoordinatorServer,
 ) runtimepb.CoordinatorServiceClient {
 	t.Helper()
+	useTestWorkerTransport(coordinator)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

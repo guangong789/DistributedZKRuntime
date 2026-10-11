@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
-	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"time"
+
+	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	"github.com/guangong789/DistributedZKRuntime/internal/rpcauth"
+	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 )
 
 type WorkerStatus int
@@ -32,6 +34,9 @@ func (s *CoordinatorServer) RegisterWorker(
 			Accepted: false,
 			Error:    "worker_id and address are required",
 		}, nil
+	}
+	if _, err := rpcauth.ParseTCPEndpoint(req.Address); err != nil {
+		return &runtimepb.RegisterWorkerResponse{Accepted: false, Error: "invalid Worker TCP endpoint"}, nil
 	}
 
 	s.mu.Lock()

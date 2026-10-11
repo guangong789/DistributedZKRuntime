@@ -11,7 +11,6 @@ import (
 
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const demoPreimageDigest = "9859286970797740035380527431348382675909558438535884267813507963157263542611"
@@ -42,13 +41,16 @@ func main() {
 		"coordinator address",
 	)
 
+	security := clientSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	transportCredentials, err := security.credentials(*coordinatorAddr)
+	if err != nil {
+		log.Fatalf("client mTLS configuration: %v", err)
+	}
 
 	conn, err := grpc.NewClient(
 		*coordinatorAddr,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
+		grpc.WithTransportCredentials(transportCredentials),
 	)
 	if err != nil {
 		log.Fatal(err)

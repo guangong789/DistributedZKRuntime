@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
+	"github.com/guangong789/DistributedZKRuntime/internal/rpcauth"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -20,16 +20,27 @@ type dispatchResult struct {
 	err  error
 }
 
-func dispatchJob(
+func (s *CoordinatorServer) dispatchJob(
 	ctx context.Context,
 	worker WorkerInfo,
 	req *runtimepb.ExecuteJobRequest,
 ) (*runtimepb.ExecuteJobResponse, error) {
+	if _, err := rpcauth.ParseTCPEndpoint(worker.Address); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid Worker TCP endpoint")
+	}
+	if s.workerCredentials == nil {
+		return nil, status.Error(codes.FailedPrecondition, "Worker dispatch credentials are not configured")
+	}
+	transport, err := s.workerCredentials(worker)
+	if err != nil {
+		return nil, err
+	}
+	if transport == nil {
+		return nil, status.Error(codes.FailedPrecondition, "Worker dispatch credentials are missing")
+	}
 	conn, err := grpc.NewClient(
 		worker.Address,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
+		grpc.WithTransportCredentials(transport),
 	)
 	if err != nil {
 		return nil, err
@@ -132,7 +143,7 @@ func (s *CoordinatorServer) executeJobFromSource(
 		resultCh := make(chan dispatchResult, 1)
 
 		go func() {
-			resp, err := dispatchJob(attemptCtx, worker, &runtimepb.ExecuteJobRequest{
+			resp, err := s.dispatchJob(attemptCtx, worker, &runtimepb.ExecuteJobRequest{
 				JobId:     spec.JobID,
 				TaskType:  spec.TaskType,
 				Payload:   spec.Payload,

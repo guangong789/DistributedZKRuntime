@@ -18,9 +18,8 @@ import (
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	prom "github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	runtime "github.com/guangong789/DistributedZKRuntime/internal/runtime"
@@ -153,13 +152,9 @@ func registerWithCoordinator(
 	workerID string,
 	workerAddress string,
 	coordinatorAddress string,
+	transport credentials.TransportCredentials,
 ) error {
-	conn, err := grpc.NewClient(
-		coordinatorAddress,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-	)
+	conn, err := newCoordinatorConnection(coordinatorAddress, transport)
 	if err != nil {
 		return err
 	}
@@ -198,13 +193,9 @@ func runHeartbeat(
 	workerID string,
 	workerAddress string,
 	coordinatorAddress string,
+	transport credentials.TransportCredentials,
 ) {
-	conn, err := grpc.NewClient(
-		coordinatorAddress,
-		grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		),
-	)
+	conn, err := newCoordinatorConnection(coordinatorAddress, transport)
 	if err != nil {
 		log.Panicln("heartbeat connection failed:", err)
 		return
@@ -273,7 +264,12 @@ func main() {
 
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9091", "metrics HTTP listen address (required; loopback by default)")
 	maxConcurrentProofs := flag.Int("max-concurrent-proofs", 1, "maximum simultaneous preimage proving calls (positive)")
+	security := workerSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	transport, err := loadWorkerTransport(*workerID, *coordinatorAddress, *security)
+	if err != nil {
+		log.Fatalf("worker mTLS configuration: %v", err)
+	}
 	provingLimiter, err := runtime.NewProvingLimiter(*maxConcurrentProofs)
 	if err != nil {
 		log.Fatal(err)
@@ -321,12 +317,10 @@ func main() {
 		log.Fatalf("listen on %s: %v", *listenAddress, err)
 	}
 
-	server := grpc.NewServer()
-
-	runtimepb.RegisterWorkerServiceServer(
-		server,
-		workerService,
-	)
+	server, err := transport.newServer(workerService)
+	if err != nil {
+		log.Fatalf("worker mTLS server configuration: %v", err)
+	}
 
 	// Start serving before registering with the coordinator so that
 	// the worker is reachable as soon as the coordinator schedules it.
@@ -347,6 +341,7 @@ func main() {
 		*workerID,
 		*advertiseAddress,
 		*coordinatorAddress,
+		transport.client,
 	); err != nil {
 		log.Fatalf("register with coordinator: %v", err)
 	}
@@ -358,6 +353,7 @@ func main() {
 		*workerID,
 		*advertiseAddress,
 		*coordinatorAddress,
+		transport.client,
 	)
 
 	<-ctx.Done()
