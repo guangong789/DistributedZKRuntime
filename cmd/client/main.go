@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"time"
 
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
@@ -41,8 +40,12 @@ func main() {
 		"coordinator address",
 	)
 
+	execution := clientExecutionFlags(flag.CommandLine)
 	security := clientSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	if err := execution.validate(); err != nil {
+		log.Fatalf("client execution configuration: %v", err)
+	}
 	transportCredentials, err := security.credentials(*coordinatorAddr)
 	if err != nil {
 		log.Fatalf("client mTLS configuration: %v", err)
@@ -59,26 +62,7 @@ func main() {
 
 	client := runtimepb.NewCoordinatorServiceClient(conn)
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		30*time.Second,
-	)
-	defer cancel()
-
-	payload, err := buildPreimagePayload("secret-001", demoPreimageDigest)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	resp, err := client.SubmitJob(
-		ctx,
-		&runtimepb.SubmitJobRequest{
-			JobId:     3001,
-			TaskType:  "zk_preimage_prove",
-			Payload:   payload,
-			TimeoutMs: 5000,
-		},
-	)
+	resp, err := submitDemo(context.Background(), client, *execution)
 	if err != nil {
 		log.Fatal(err)
 	}

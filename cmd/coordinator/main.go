@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -97,8 +96,12 @@ func main() {
 	)
 
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9090", "metrics HTTP listen address (required; loopback by default)")
+	execution := coordinatorExecutionFlags(flag.CommandLine)
 	security := coordinatorSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	if err := execution.validate(); err != nil {
+		log.Fatalf("coordinator execution configuration: %v", err)
+	}
 	transport, err := security.load()
 	if err != nil {
 		log.Fatalf("coordinator mTLS configuration: %v", err)
@@ -126,7 +129,7 @@ func main() {
 		leases:            make(map[int64]JobLease),
 		activeJobs:        make(map[int64]struct{}),
 		jobStore:          store,
-		leaseDuration:     5 * time.Second,
+		leaseDuration:     execution.AttemptLease,
 		recoveryReady:     make(chan struct{}, 1),
 		preimageVerifier:  preimageVerifier,
 		metrics:           observer,
@@ -150,14 +153,14 @@ func main() {
 		log.Fatalf("failed to recover running jobs: %v", err)
 	}
 
-	listener, err := net.Listen("tcp", ":50050")
+	listener, err := execution.listen()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	server := transport.newServer(coordinator)
 
-	fmt.Println("coordinator mTLS listening on :50050")
+	fmt.Printf("coordinator mTLS listening on %s\n", listener.Addr())
 
 	go coordinator.runLivenessMonitor(
 		time.Second,

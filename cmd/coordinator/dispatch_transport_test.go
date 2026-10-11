@@ -239,7 +239,7 @@ func TestMTLSReregistrationCannotBypassDispatchIdentity(t *testing.T) {
 }
 
 func TestMTLSTimedRecoveryAfterProvingCapacityReturns(t *testing.T) {
-	f := newMTLSCoordinator(t)
+	f := newMTLSCoordinator(t, coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: 45 * time.Second})
 	fixture := newIntegrationZKFixture(t)
 	f.s.preimageVerifier = fixture.verifier
 	record := preimageRecord(11106, 7, "old-worker", JobRecovering, fixture.payload)
@@ -289,6 +289,7 @@ func TestMTLSTimedRecoveryAfterProvingCapacityReturns(t *testing.T) {
 	}
 	waitRecoveryReset(t, c, time.Second)
 	release.Do(limiter.Release)
+	beforeRetry := time.Now()
 	c.advance(time.Second)
 	waitRecoverySignal(t, terminal)
 	stop()
@@ -298,6 +299,9 @@ func TestMTLSTimedRecoveryAfterProvingCapacityReturns(t *testing.T) {
 	lease, ok := f.s.getLease(record.JobID)
 	if !ok || lease.AttemptID != 10 || lease.WorkerID != "worker-a" || calls.Load() != 3 || proving.samples.Load() != 1 || f.observer.count("verification", "") != 1 || f.observer.count("submitted", "") != 0 || len(q.entries) != 0 {
 		t.Fatal("timed recovery changed identity, generation, proof verification, lease or metrics")
+	}
+	if lease.ExpiresAt.Before(beforeRetry.Add(45*time.Second)) || lease.ExpiresAt.After(time.Now().Add(45*time.Second)) {
+		t.Fatal("recovery did not use the configured attempt lease")
 	}
 	assertRecoveryOwnershipReleased(t, f.s, record.JobID)
 }

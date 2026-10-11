@@ -36,8 +36,12 @@ type mtlsCoordinator struct {
 	address  string
 }
 
-func newMTLSCoordinator(t *testing.T) *mtlsCoordinator {
+func newMTLSCoordinator(t *testing.T, executionOptions ...coordinatorExecutionConfig) *mtlsCoordinator {
 	t.Helper()
+	execution := coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: defaultAttemptLease}
+	if len(executionOptions) != 0 {
+		execution = executionOptions[0]
+	}
 	ca := testpki.New(t)
 	files := ca.Issue(t, testpki.Coordinator, nil)
 	cfg := coordinatorSecurityConfig{CertFile: files.Cert, KeyFile: files.Key, CAFile: files.CA, Identity: testpki.Coordinator, Clients: []string{testpki.Client}, Workers: []string{testpki.Worker, workerBIdentity}}
@@ -47,8 +51,8 @@ func newMTLSCoordinator(t *testing.T) *mtlsCoordinator {
 	}
 	store := newWorkerFailureStore(t)
 	observer := &recordingMetrics{}
-	s := &CoordinatorServer{jobStore: store, metrics: observer, recoveryReady: make(chan struct{}, 1), workerCredentials: transport.workerCredentials}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	s := &CoordinatorServer{jobStore: store, metrics: observer, recoveryReady: make(chan struct{}, 1), workerCredentials: transport.workerCredentials, leaseDuration: execution.AttemptLease}
+	listener, err := execution.listen()
 	if err != nil {
 		t.Fatal(err)
 	}

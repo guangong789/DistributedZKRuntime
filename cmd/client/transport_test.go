@@ -19,6 +19,7 @@ type clientTLSCoordinator struct {
 	runtimepb.UnimplementedCoordinatorServiceServer
 	calls    atomic.Int32
 	identity chan rpcauth.Principal
+	requests chan *runtimepb.SubmitJobRequest
 }
 
 func (s *clientTLSCoordinator) SubmitJob(ctx context.Context, r *runtimepb.SubmitJobRequest) (*runtimepb.SubmitJobResponse, error) {
@@ -28,6 +29,9 @@ func (s *clientTLSCoordinator) SubmitJob(ctx context.Context, r *runtimepb.Submi
 	}
 	s.calls.Add(1)
 	s.identity <- p
+	if s.requests != nil {
+		s.requests <- r
+	}
 	return &runtimepb.SubmitJobResponse{JobId: r.JobId, AttemptId: 1, Status: "Succeeded"}, nil
 }
 
@@ -68,7 +72,7 @@ func TestClientMTLSProductionDial(t *testing.T) {
 				t.Fatal(err)
 			}
 			server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)), grpc.UnaryInterceptor(policy.UnaryInterceptor()))
-			service := &clientTLSCoordinator{identity: make(chan rpcauth.Principal, 1)}
+			service := &clientTLSCoordinator{identity: make(chan rpcauth.Principal, 1), requests: make(chan *runtimepb.SubmitJobRequest, 1)}
 			runtimepb.RegisterCoordinatorServiceServer(server, service)
 			done := make(chan struct{})
 			go func() { defer close(done); _ = server.Serve(listener) }()
@@ -106,6 +110,19 @@ func TestClientMTLSProductionDial(t *testing.T) {
 					}
 				case <-ctx.Done():
 					t.Fatal("no authenticated request")
+				}
+				<-service.requests // Original request, whose assertions remain above.
+				response, err = submitDemo(ctx, runtimepb.NewCoordinatorServiceClient(conn), clientExecutionConfig{JobTimeout: 40 * time.Second, RPCTimeout: 90 * time.Second})
+				if err != nil || response.GetJobId() != 3001 || service.calls.Load() != 2 {
+					t.Fatalf("configured demo over mTLS: %v", err)
+				}
+				select {
+				case request := <-service.requests:
+					if request.TimeoutMs != 40000 || request.Payload != payload || request.TaskType != "zk_preimage_prove" {
+						t.Fatal("configured task timeout did not reach the real mTLS RPC")
+					}
+				case <-ctx.Done():
+					t.Fatal("configured demo request was not received")
 				}
 			} else if err == nil || response != nil || service.calls.Load() != 0 {
 				t.Fatal("wrong Coordinator URI or DNS/IP SAN accepted")

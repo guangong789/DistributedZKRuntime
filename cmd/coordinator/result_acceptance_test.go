@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,16 +48,25 @@ func TestResultAcceptanceBoundaries(t *testing.T) {
 				verifier: realVerifier, entered: make(chan struct{}), release: make(chan struct{}),
 			}
 			observer := &recordingMetrics{}
-			s := &CoordinatorServer{jobStore: store, preimageVerifier: verifier, leaseDuration: 5 * time.Second, metrics: observer}
+			fs := flag.NewFlagSet("coordinator", flag.ContinueOnError)
+			execution := coordinatorExecutionFlags(fs)
+			leaseFlag := "5s"
+			if scenario == "lease expires during verification" {
+				leaseFlag = "250ms"
+			}
+			if err := fs.Parse([]string{"-attempt-lease", leaseFlag}); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.validate(); err != nil {
+				t.Fatal(err)
+			}
+			s := &CoordinatorServer{jobStore: store, preimageVerifier: verifier, leaseDuration: execution.AttemptLease, metrics: observer}
 			observer.hook = func(event recordedMetric) {
 				switch event.name {
 				case "started", "finished", "terminal", "verification":
 					// Reentering here also catches metrics emitted under s.mu.
 					s.getLease(jobID)
 				}
-			}
-			if scenario == "lease expires during verification" {
-				s.leaseDuration = 250 * time.Millisecond
 			}
 			var workerCalls atomic.Int32
 			registerTestWorker(t, s, workerID, func(_ context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {

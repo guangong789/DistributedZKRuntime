@@ -99,7 +99,7 @@ func (s *CoordinatorServer) executeJobFromSource(
 	const maxAttempts = 2
 	leaseDuration := s.leaseDuration
 	if leaseDuration <= 0 {
-		leaseDuration = 5 * time.Second
+		leaseDuration = defaultAttemptLease
 	}
 
 	var lastErr error
