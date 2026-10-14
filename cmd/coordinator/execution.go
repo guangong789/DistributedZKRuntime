@@ -20,6 +20,17 @@ type dispatchResult struct {
 	err  error
 }
 
+// retryExhaustionError identifies only the retryable session exit and carries
+// the exact last attempt it published. Its RPC status remains Unavailable.
+type retryExhaustionError struct {
+	attemptID int64
+	cause     error
+}
+
+func (e *retryExhaustionError) Error() string              { return e.cause.Error() }
+func (e *retryExhaustionError) Unwrap() error              { return e.cause }
+func (e *retryExhaustionError) GRPCStatus() *status.Status { return status.Convert(e.cause) }
+
 func (s *CoordinatorServer) dispatchJob(
 	ctx context.Context,
 	worker WorkerInfo,
@@ -52,7 +63,7 @@ func (s *CoordinatorServer) dispatchJob(
 	return client.ExecuteJob(ctx, req)
 }
 
-// executeJob runs normal submissions and finalizes parent cancellation durably.
+// executeJob finalizes normal submission cancellation and retry exhaustion.
 // The caller must hold claimJob ownership for spec.JobID until this returns.
 // Ownership stays at the entry point; this method neither claims nor releases it.
 func (s *CoordinatorServer) executeJob(
@@ -64,9 +75,28 @@ func (s *CoordinatorServer) executeJob(
 	s.mu.Unlock()
 
 	resp, err := s.executeJobFromSource(ctx, spec, metrics.SourceSubmit)
-	contextErr := ctx.Err()
 	// An accepted terminal result wins if cancellation arrives during/after Save.
-	if err == nil || contextErr == nil {
+	if err == nil {
+		return resp, err
+	}
+	var exhausted *retryExhaustionError
+	if ctx.Err() == nil && errors.As(err, &exhausted) {
+		persisted, persistenceErr := s.persistSubmitFailure(ctx, spec.JobID, initialAttempt, exhausted.attemptID)
+		if persisted {
+			// A committed Failed wins subsequent cancellation, despite the RPC error.
+			metrics.Resolve(s.metrics).JobTerminal(metrics.SourceSubmit, metrics.TerminalFailed)
+			return nil, err
+		}
+		// Only the helper's direct context error selects cancellation here;
+		// wrapped storage errors remain persistence failures even after cancel.
+		if persistenceErr != nil && persistenceErr != ctx.Err() {
+			log.Printf("submit failure persistence failed: job=%d attempt=%d err=%v", spec.JobID, exhausted.attemptID, persistenceErr)
+			return nil, status.Errorf(codes.Internal, "failed to finalize job %d attempt %d: %v (execution: %v)",
+				spec.JobID, exhausted.attemptID, persistenceErr, err)
+		}
+	}
+	contextErr := ctx.Err()
+	if contextErr == nil {
 		return resp, err
 	}
 	persisted, persistenceErr := s.persistSubmitCancellation(spec.JobID, initialAttempt)
@@ -103,6 +133,7 @@ func (s *CoordinatorServer) executeJobFromSource(
 	}
 
 	var lastErr error
+	var lastPublishedAttempt int64
 
 	for i := 0; i < maxAttempts; i++ {
 		if err := ctx.Err(); err != nil {
@@ -131,6 +162,7 @@ func (s *CoordinatorServer) executeJobFromSource(
 				err,
 			)
 		}
+		lastPublishedAttempt = attemptID
 
 		attemptStart := time.Now()
 		// Durable lifecycle events are omitted in the legacy nil-store mode.
@@ -142,7 +174,9 @@ func (s *CoordinatorServer) executeJobFromSource(
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		resultCh := make(chan dispatchResult, 1)
 
+		s.dispatchWG.Add(1)
 		go func() {
+			defer s.dispatchWG.Done()
 			resp, err := s.dispatchJob(attemptCtx, worker, &runtimepb.ExecuteJobRequest{
 				JobId:     spec.JobID,
 				TaskType:  spec.TaskType,
@@ -333,7 +367,10 @@ func (s *CoordinatorServer) executeJobFromSource(
 		return nil, err
 	}
 	if lastErr != nil {
-		return nil, status.Errorf(codes.Unavailable, "job submission failed: %v", lastErr)
+		return nil, &retryExhaustionError{
+			attemptID: lastPublishedAttempt,
+			cause:     status.Errorf(codes.Unavailable, "job submission failed: %v", lastErr),
+		}
 	}
 	return nil, status.Error(codes.Unavailable, "no alive workers available")
 }

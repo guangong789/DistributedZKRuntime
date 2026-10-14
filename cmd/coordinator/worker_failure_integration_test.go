@@ -404,9 +404,10 @@ func TestInFlightWorkerStopWithoutBackupNeverPersistsSuccess(t *testing.T) {
 	assertWorkerFailureSaves(t, store, []JobRecord{
 		preimageRecord(jobID, 1, "worker-1", JobRunning, payload),
 		preimageRecord(jobID, 2, "worker-1", JobRunning, payload),
+		preimageRecord(jobID, 2, "worker-1", JobFailed, payload),
 	})
 	record, ok, err := store.Load(jobID)
-	if err != nil || !ok || record != preimageRecord(jobID, 2, "worker-1", JobRunning, payload) {
+	if err != nil || !ok || record != preimageRecord(jobID, 2, "worker-1", JobFailed, payload) {
 		t.Fatalf("failed job durable record=%+v found=%v error=%v", record, ok, err)
 	}
 }

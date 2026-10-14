@@ -16,7 +16,7 @@ import (
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 )
 
-func newTestPreimageProver(t *testing.T) (*zk.PreimageProver, *zk.PreimageVerifier) {
+func newTestPreimageProver(t testing.TB) (*zk.PreimageProver, *zk.PreimageVerifier) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -36,7 +36,7 @@ func newTestPreimageProver(t *testing.T) (*zk.PreimageProver, *zk.PreimageVerifi
 	return prover, verifier
 }
 
-func newTestProvingLimiter(t *testing.T) *runtime.ProvingLimiter {
+func newTestProvingLimiter(t testing.TB) *runtime.ProvingLimiter {
 	t.Helper()
 	limiter, err := runtime.NewProvingLimiter(1)
 	if err != nil {
@@ -45,7 +45,7 @@ func newTestProvingLimiter(t *testing.T) *runtime.ProvingLimiter {
 	return limiter
 }
 
-func preimageTestPayload(t *testing.T, witnessRef string, digest fr.Element) string {
+func preimageTestPayload(t testing.TB, witnessRef string, digest fr.Element) string {
 	t.Helper()
 	var digestInt big.Int
 	digest.BigInt(&digestInt)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 type Executor struct {
@@ -56,6 +57,11 @@ func NewExecutor(workerCount int, queueSize int) *Executor {
 // ExecuteJob executes a task and maps its output and error to a job result.
 func ExecuteJob(ctx context.Context, job Job) Result {
 	output, err := job.Task.Execute(ctx)
+	// Authoritative generic Success gate, including tasks that ignore context.
+	// Genuine execution failures retain their original classification.
+	if err == nil {
+		err = resultContextError(ctx, time.Now())
+	}
 
 	if err != nil {
 		status := JobFailed

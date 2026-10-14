@@ -74,7 +74,7 @@ func TestSubmitStrictZKPayloadBoundary(t *testing.T) {
 		t.Fatal("cannot preclaim")
 	}
 	defer s.releaseJob(9902)
-	if _, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 9902, TaskType: "zk_preimage_prove", Payload: `{"secret":"PRIVATE_VALUE_MARKER"}`}); status.Code(err) != codes.InvalidArgument {
+	if _, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 9902, TaskType: "zk_preimage_prove", Payload: `{"secret":"PRIVATE_VALUE_MARKER"}`, TimeoutMs: 1000}); status.Code(err) != codes.InvalidArgument {
 		t.Fatal("ownership happened before validation")
 	}
 	if s.claimJob(9902) {
@@ -130,7 +130,7 @@ func TestInternalExecutionRejectsPrivateZKPayload(t *testing.T) {
 		calls.Add(1)
 		return successfulResult(r), nil
 	})
-	spec := JobSpec{JobID: 9904, TaskType: "zk_preimage_prove", Payload: `{"witness_ref":"ref","digest":"1","secret":"PRIVATE_VALUE_MARKER"}`}
+	spec := JobSpec{JobID: 9904, TaskType: "zk_preimage_prove", Payload: `{"witness_ref":"ref","digest":"1","secret":"PRIVATE_VALUE_MARKER"}`, TimeoutMs: 1000}
 	if !s.claimJob(spec.JobID) {
 		t.Fatal("cannot claim")
 	}

@@ -283,7 +283,7 @@ func TestMetricsZKVerificationOrdering(t *testing.T) {
 			}
 			if resp != nil || status.Code(err) != codes.Unavailable || observer.count("submitted", "") != 1 ||
 				observer.count("started", "") != 2 || observer.count("finished", "") != 2 ||
-				observer.count("terminal", "") != 0 {
+				observer.count("terminal", "") != 1 || observer.count("terminal", string(metrics.TerminalFailed)) != 1 {
 				t.Fatalf("rejected proof response=%v error=%v events=%+v", resp, err, observer.snapshot())
 			}
 			if scenario == "fenced" {
@@ -419,15 +419,18 @@ func TestMetricsAttemptFinishedOnceOnAbandonment(t *testing.T) {
 			if errors.Is(err, context.Canceled) {
 				gotCode = codes.Canceled
 			}
-			wantTerminals := 0
+			wantTerminal := metrics.TerminalFailed
+			wantTerminals := 1
 			if tc.name == "cancel" {
-				wantTerminals = 1
+				wantTerminal = metrics.TerminalCancelled
+			} else if tc.name == "invalid status" {
+				wantTerminals = 0
 			}
 			if resp != nil || gotCode != tc.code || observer.count("started", "") != tc.starts ||
 				observer.count("finished", "") != tc.starts ||
 				observer.count("finished", string(tc.outcome)) != tc.starts ||
 				observer.count("terminal", "") != wantTerminals ||
-				observer.count("terminal", string(metrics.TerminalCancelled)) != wantTerminals {
+				observer.count("terminal", string(wantTerminal)) != wantTerminals {
 				t.Fatalf("abandonment response=%v error=%v events=%+v", resp, err, observer.snapshot())
 			}
 			waitCtx, waitCancel := context.WithTimeout(context.Background(), 5*time.Second)

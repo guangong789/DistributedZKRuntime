@@ -47,7 +47,13 @@ func TestPreimageProvingCapacitySurvivesCancellation(t *testing.T) {
 			t.Cleanup(func() {
 				cancel()
 				releaseOnce.Do(func() { close(release) })
-				wg.Wait()
+				joined := make(chan struct{})
+				go func() { wg.Wait(); close(joined) }()
+				select {
+				case <-joined:
+				case <-time.After(5 * time.Second):
+					t.Error("proving calls did not finish after release")
+				}
 			})
 			results := make(chan error, capacity)
 			for i := 0; i < capacity; i++ {
@@ -100,9 +106,9 @@ func TestPreimageProvingCapacitySurvivesCancellation(t *testing.T) {
 			for i := 0; i < capacity; i++ {
 				select {
 				case err := <-results:
-					// Preserve the existing post-Prove context behavior.
-					if err != nil {
-						t.Fatalf("released synchronous prover changed cancellation behavior: %v", err)
+					// Completion releases capacity, but cancellation discards the proof.
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("released synchronous prover returned %v, want cancellation", err)
 					}
 				case <-waitCtx.Done():
 					t.Fatal("prover did not return after release")

@@ -29,7 +29,7 @@ func (p *countingPreimageProver) Prove(int64, fr.Element) ([]byte, error) {
 	return []byte("proof"), nil
 }
 
-func preimageTaskPayload(t *testing.T, ref, digest string) string {
+func preimageTaskPayload(t testing.TB, ref, digest string) string {
 	t.Helper()
 	data, err := json.Marshal(ZKPreimagePayload{
 		WitnessRef: ref,
@@ -47,7 +47,8 @@ func decimalPreimageDigest(digest fr.Element) string {
 	return value.String()
 }
 
-func TestZKPreimageTaskRealProof(t *testing.T) {
+func newPreimageTaskFixture(t testing.TB) (ZKPreimageTask, *zk.PreimageVerifier, fr.Element) {
+	t.Helper()
 	dir := t.TempDir()
 	provingKeyPath := filepath.Join(dir, "proving.key")
 	verifyingKeyPath := filepath.Join(dir, "verifying.key")
@@ -71,6 +72,11 @@ func TestZKPreimageTaskRealProof(t *testing.T) {
 		Prover:       prover,
 		WitnessStore: store,
 	}
+	return task, verifier, digest
+}
+
+func TestZKPreimageTaskRealProof(t *testing.T) {
+	task, verifier, digest := newPreimageTaskFixture(t)
 
 	t.Run("valid proof", func(t *testing.T) {
 		output, err := task.Execute(context.Background())
@@ -175,11 +181,9 @@ func TestZKPreimageTaskPropagatesProverError(t *testing.T) {
 	}
 }
 
-// Characterizes current behavior, not a desired acceptance contract: the
-// synchronous prover cannot be interrupted, and Execute does not check the
-// task context again when Prove returns. The bytes here are a test stand-in,
-// not a cryptographically verified proof.
-func TestZKPreimageTaskReturnsProofAfterTaskDeadline(t *testing.T) {
+// Synchronous proving retains capacity until completion, but an expired task
+// cannot expose its proof as a successful local result.
+func TestZKPreimageTaskRejectsProofAfterTaskDeadline(t *testing.T) {
 	store := NewMemoryWitnessStore()
 	store.Put("secret-001", 42)
 	limiter, err := NewProvingLimiter(1)
@@ -244,11 +248,13 @@ func TestZKPreimageTaskReturnsProofAfterTaskDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("task did not finish after releasing Prove")
 	}
-	proof, err := base64.StdEncoding.DecodeString(output)
-	if executeErr != nil || err != nil || string(proof) != "controlled proof" || calls != 1 {
-		t.Fatalf("observed task result: output=%q error=%v decode=%v calls=%d", output, executeErr, err, calls)
+	if !errors.Is(executeErr, context.DeadlineExceeded) || output != "" || calls != 1 {
+		t.Fatalf("late task result: output=%q error=%v calls=%d", output, executeErr, calls)
 	}
-	t.Log("Prove called once; task context expired; Execute still returned Base64 proof with nil error")
+	if !limiter.TryAcquire() {
+		t.Fatal("completed task retained capacity")
+	}
+	limiter.Release()
 }
 
 func TestZKPreimageTaskRejectsPrivatePayloadBeforeWitnessOrProve(t *testing.T) {

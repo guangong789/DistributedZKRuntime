@@ -1,6 +1,7 @@
 package main
 
 import (
+	runtime "github.com/guangong789/DistributedZKRuntime/internal/runtime"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc/codes"
@@ -35,7 +36,12 @@ func jobSpecFromRecord(record JobRecord) JobSpec {
 
 // validateJobSpec returns a value snapshot. Raw RPC/legacy ZK JSON cannot reach
 // persistence or dispatch; other task types retain their existing payloads.
+// Budgets must be explicit and representable: invalid legacy values require
+// operator correction rather than silently acquiring a default execution budget.
 func validateJobSpec(spec JobSpec) (JobSpec, error) {
+	if _, err := runtime.TaskTimeoutFromMilliseconds(spec.TimeoutMs); err != nil {
+		return JobSpec{}, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if spec.TaskType == "zk_preimage_prove" {
 		payload, err := zk.ParsePreimagePublicPayload(spec.Payload)
 		if err != nil {

@@ -38,7 +38,7 @@ func startExecutionWorker(t *testing.T, ca *testpki.CA, service *WorkerService) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := transport.newServer(service)
+	server, err := transport.newServer(service, newWorkerLifecycle())
 	if err != nil {
 		t.Fatal(err)
 	}

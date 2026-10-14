@@ -95,9 +95,12 @@ func (t *coordinatorTransport) workerCredentials(worker WorkerInfo) (credentials
 }
 
 func (t *coordinatorTransport) newServer(service *CoordinatorServer) *grpc.Server {
+	if service.lifecycle == nil {
+		service.lifecycle = newCoordinatorLifecycle()
+	}
 	server := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(t.tls)),
-		grpc.ChainUnaryInterceptor(t.policy.UnaryInterceptor(), validateWorkerRegistration),
+		grpc.ChainUnaryInterceptor(t.policy.UnaryInterceptor(), service.lifecycle.unaryInterceptor(), validateWorkerRegistration),
 		grpc.UnknownServiceHandler(t.policy.UnknownServiceHandler()),
 	)
 	runtimepb.RegisterCoordinatorServiceServer(server, service)

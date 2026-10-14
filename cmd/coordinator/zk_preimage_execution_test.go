@@ -201,6 +201,7 @@ func TestSubmitPreimageExhaustsInvalidProofsWithoutSuccess(t *testing.T) {
 	assertPreimageSaves(t, store, []JobRecord{
 		preimageRecord(703, 1, "invalid", JobRunning, payload),
 		preimageRecord(703, 2, "invalid", JobRunning, payload),
+		preimageRecord(703, 2, "invalid", JobFailed, payload),
 	})
 }
 
@@ -224,6 +225,7 @@ func TestSubmitPreimageRejectsWrongPublicDigest(t *testing.T) {
 	assertPreimageSaves(t, store, []JobRecord{
 		preimageRecord(704, 1, "wrong-digest", JobRunning, payload),
 		preimageRecord(704, 2, "wrong-digest", JobRunning, payload),
+		preimageRecord(704, 2, "wrong-digest", JobFailed, payload),
 	})
 }
 
@@ -262,6 +264,7 @@ func TestSubmitPreimageFencesBeforeVerification(t *testing.T) {
 			assertPreimageSaves(t, store, []JobRecord{
 				preimageRecord(705, 1, "fenced", JobRunning, payload),
 				preimageRecord(705, 2, "fenced", JobRunning, payload),
+				preimageRecord(705, 2, "fenced", JobFailed, payload),
 			})
 		})
 	}
@@ -346,5 +349,6 @@ func TestSubmitPreimageWithoutVerifierRejectsSuccess(t *testing.T) {
 	assertPreimageSaves(t, store, []JobRecord{
 		preimageRecord(708, 1, "unverified", JobRunning, payload),
 		preimageRecord(708, 2, "unverified", JobRunning, payload),
+		preimageRecord(708, 2, "unverified", JobFailed, payload),
 	})
 }

@@ -29,16 +29,18 @@ import (
 const workerBIdentity = "spiffe://distributedzk.local/worker/worker-b"
 
 type mtlsCoordinator struct {
-	ca       *testpki.CA
-	s        *CoordinatorServer
-	store    *workerFailureStore
-	observer *recordingMetrics
-	address  string
+	ca        *testpki.CA
+	s         *CoordinatorServer
+	store     *workerFailureStore
+	observer  *recordingMetrics
+	address   string
+	server    *grpc.Server
+	serveDone chan struct{}
 }
 
 func newMTLSCoordinator(t *testing.T, executionOptions ...coordinatorExecutionConfig) *mtlsCoordinator {
 	t.Helper()
-	execution := coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: defaultAttemptLease}
+	execution := coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: defaultAttemptLease, ShutdownTimeout: defaultShutdownTimeout}
 	if len(executionOptions) != 0 {
 		execution = executionOptions[0]
 	}
@@ -60,7 +62,8 @@ func newMTLSCoordinator(t *testing.T, executionOptions ...coordinatorExecutionCo
 	done := make(chan struct{})
 	go func() { defer close(done); _ = server.Serve(listener) }()
 	t.Cleanup(func() { server.Stop(); <-done })
-	return &mtlsCoordinator{ca, s, store, observer, listener.Addr().String()}
+	return &mtlsCoordinator{ca: ca, s: s, store: store, observer: observer,
+		address: listener.Addr().String(), server: server, serveDone: done}
 }
 
 func (f *mtlsCoordinator) connection(t *testing.T, identity string) *grpc.ClientConn {
@@ -307,7 +310,7 @@ func TestCoordinatorMTLSRejectsTLSFailuresWithoutSideEffects(t *testing.T) {
 			}
 			client := runtimepb.NewCoordinatorServiceClient(f.connect(t, transport))
 			before := f.snapshot()
-			if response, err := client.SubmitJob(mtlsContext(t), &runtimepb.SubmitJobRequest{JobId: 10003, TaskType: "hash", Payload: "hello"}); err == nil || response != nil {
+			if response, err := client.SubmitJob(mtlsContext(t), &runtimepb.SubmitJobRequest{JobId: 10003, TaskType: "hash", Payload: "hello", TimeoutMs: 1000}); err == nil || response != nil {
 				t.Fatal("invalid TLS peer invoked Coordinator")
 			}
 			if response, err := client.RegisterWorker(mtlsContext(t), &runtimepb.RegisterWorkerRequest{WorkerId: "worker-a", Address: "attacker"}); err == nil || response != nil {
@@ -325,7 +328,7 @@ func TestCoordinatorMTLSAuthenticatedPayloadValidation(t *testing.T) {
 	f := newMTLSCoordinator(t)
 	client := runtimepb.NewCoordinatorServiceClient(f.connection(t, testpki.Client))
 	before := f.snapshot()
-	response, err := client.SubmitJob(mtlsContext(t), &runtimepb.SubmitJobRequest{JobId: 10004, TaskType: "zk_preimage_prove", Payload: `{"witness_ref":"ref","digest":"1","secret":"PRIVATE_MARKER"}`})
+	response, err := client.SubmitJob(mtlsContext(t), &runtimepb.SubmitJobRequest{JobId: 10004, TaskType: "zk_preimage_prove", Payload: `{"witness_ref":"ref","digest":"1","secret":"PRIVATE_MARKER"}`, TimeoutMs: 1000})
 	if response != nil || status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("payload validation after authentication: %v", err)
 	}

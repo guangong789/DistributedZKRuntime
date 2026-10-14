@@ -176,7 +176,7 @@ func TestWorkerMTLSRegistrationAndHeartbeatReuse(t *testing.T) {
 	}
 	const advertised = "worker.example:50051"
 	// Exercise the actual initial-registration path and its three-second timeout.
-	if err := registerWithCoordinator("worker-a", advertised, address, transport); err != nil {
+	if err := registerWithCoordinator(context.Background(), "worker-a", advertised, address, transport); err != nil {
 		t.Fatal(err)
 	}
 	// Exercise the actual connection constructor used by runHeartbeat; retain this
@@ -203,7 +203,7 @@ func TestWorkerMTLSRegistrationAndHeartbeatReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Certificate Worker A cannot use even the startup helper to impersonate B.
-	if err := registerWithCoordinator("worker-b", advertised, address, transport); status.Code(err) != codes.PermissionDenied {
+	if err := registerWithCoordinator(context.Background(), "worker-b", advertised, address, transport); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("WorkerID impersonation: %v", err)
 	}
 	service.mu.Lock()
@@ -231,7 +231,7 @@ func TestWorkerMTLSRejectsWrongCoordinatorEndpoint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := registerWithCoordinator("worker-a", "worker.example:50051", address, transport); err == nil {
+			if err := registerWithCoordinator(context.Background(), "worker-a", "worker.example:50051", address, transport); err == nil {
 				t.Fatal("wrong Coordinator endpoint accepted")
 			}
 			service.mu.Lock()

@@ -132,12 +132,6 @@ func (s *CoordinatorServer) Heartbeat(
 		s.notifyRecoveryReady()
 	}
 
-	fmt.Printf(
-		"heartbeat: worker=%s last_seen=%v\n",
-		worker.ID,
-		worker.LastSeen,
-	)
-
 	return &runtimepb.HeartbeatResponse{
 		Accepted: true,
 	}, nil
@@ -184,13 +178,22 @@ func (s *CoordinatorServer) checkWorkerLiveness(
 }
 
 func (s *CoordinatorServer) runLivenessMonitor(
+	ctx context.Context,
 	checkInterval time.Duration,
 	workerTimeout time.Duration,
 ) {
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.checkWorkerLiveness(workerTimeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
+			s.checkWorkerLiveness(workerTimeout)
+		}
 	}
 }

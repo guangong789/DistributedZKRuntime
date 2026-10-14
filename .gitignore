@@ -9,16 +9,29 @@
 /worker.exe
 /zksetup
 /zksetup.exe
+/bin/
 *.test
 *.test.exe
 /coverage.out
 /coverage.html
+/bench*.out
+*.prof
+*.pprof
+*.cpu
+*.heap
 
 # Local editor and OS files
 /.vscode/
 /.idea/
 .DS_Store
 Thumbs.db
+
+# Local environment; keep non-secret examples eligible for version control
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
 # Local runtime and temporary files
 *.db

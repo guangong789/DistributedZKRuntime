@@ -35,13 +35,33 @@ func (p *blockedTransportProver) Prove(secret int64, digest fr.Element) ([]byte,
 	return p.real.Prove(secret, digest)
 }
 
-// Uses the production task, limiter and busy mapping. The only injected fault is
-// a non-interruptible prover barrier; release delegates to real Groth16 Prove.
+// capturedTransportProver retains the real proof for the deliberately
+// non-cooperative remote Worker below. Each handler owns its own capture.
+type capturedTransportProver struct {
+	runtime.PreimageProver
+	proof []byte
+}
+
+func (p *capturedTransportProver) Prove(secret int64, digest fr.Element) ([]byte, error) {
+	proof, err := p.PreimageProver.Prove(secret, digest)
+	p.proof = proof
+	return proof, err
+}
+
+// Uses the production task, limiter and busy mapping. When late is non-nil,
+// deliberately return a real successful proof despite local cancellation. This
+// models an uncooperative remote Worker and keeps Coordinator fencing coverage
+// independent of the runtime's strict local result-deadline contract.
 func controlledMTLSProvingWorker(fixture integrationZKFixture, prover runtime.PreimageProver, limiter *runtime.ProvingLimiter, observer metrics.Metrics, late chan<- *runtimepb.ExecuteJobResponse) func(context.Context, *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 	return func(ctx context.Context, r *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
-		jobCtx, cancel := context.WithTimeout(ctx, time.Duration(r.TimeoutMs)*time.Millisecond)
+		timeout, err := runtime.TaskTimeoutFromMilliseconds(r.TimeoutMs)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		jobCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		task := runtime.ZKPreimageTask{Payload: r.Payload, Prover: prover, WitnessStore: fixture.witnesses, Limiter: limiter, Metrics: observer}
+		capture := &capturedTransportProver{PreimageProver: prover}
+		task := runtime.ZKPreimageTask{Payload: r.Payload, Prover: capture, WitnessStore: fixture.witnesses, Limiter: limiter, Metrics: observer}
 		result := runtime.ExecuteJob(jobCtx, runtime.Job{ID: int(r.JobId), Task: task, Status: runtime.JobRunning})
 		if errors.Is(result.Err, runtime.ErrProvingBusy) {
 			return nil, status.Error(codes.ResourceExhausted, result.Err.Error())
@@ -52,6 +72,9 @@ func controlledMTLSProvingWorker(fixture integrationZKFixture, prover runtime.Pr
 		}
 		response := &runtimepb.ExecuteJobResponse{JobId: int64(result.JobID), AttemptId: r.AttemptId, Status: result.Status.String(), Output: result.Output, Error: text}
 		if late != nil {
+			if len(capture.proof) > 0 && (errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded)) {
+				response.Status, response.Output, response.Error = "Succeeded", base64.StdEncoding.EncodeToString(capture.proof), ""
+			}
 			late <- response
 		}
 		return response, nil

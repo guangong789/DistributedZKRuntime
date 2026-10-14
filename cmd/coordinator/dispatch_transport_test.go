@@ -134,10 +134,10 @@ func TestMTLSDispatchRejectsBadEndpointsAsInfrastructureAttempts(t *testing.T) {
 				t.Fatalf("transport failure classified as task result: %v", err)
 			}
 			writes := f.store.savedRecords()
-			if len(writes) != 2 || writes[0].State != JobRunning || writes[0].AttemptID != 1 || writes[1].State != JobRunning || writes[1].AttemptID != 2 || calls.Load() != 0 {
-				t.Fatal("failed authentication executed or persisted a terminal result")
+			if len(writes) != 3 || writes[0].State != JobRunning || writes[0].AttemptID != 1 || writes[1].State != JobRunning || writes[1].AttemptID != 2 || writes[2].State != JobFailed || writes[2].AttemptID != 2 || calls.Load() != 0 {
+				t.Fatal("failed authentication executed a handler or failed to finalize the session")
 			}
-			if f.observer.count("started", "") != 2 || f.observer.count("finished", string(metrics.AttemptRPCError)) != 2 || f.observer.count("terminal", "") != 0 {
+			if f.observer.count("started", "") != 2 || f.observer.count("finished", string(metrics.AttemptRPCError)) != 2 || f.observer.count("terminal", "") != 1 || f.observer.count("terminal", string(metrics.TerminalFailed)) != 1 {
 				t.Fatal("transport failures did not retain legitimate attempt accounting")
 			}
 			assertRecoveryOwnershipReleased(t, f.s, 11102)
@@ -219,7 +219,7 @@ func TestMTLSReregistrationCannotBypassDispatchIdentity(t *testing.T) {
 		t.Fatal("endpoint replacement changed the expected logical identity")
 	}
 	record, ok, err := f.store.Load(11105)
-	if err != nil || !ok || record.State != JobRunning || record.AttemptID != 2 {
+	if err != nil || !ok || record.State != JobFailed || record.AttemptID != 2 {
 		t.Fatal("mismatched endpoint did not remain an infrastructure failure")
 	}
 	replacement := startMTLSBackend(t, f, testpki.Worker, func(_ context.Context, r *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
@@ -239,7 +239,7 @@ func TestMTLSReregistrationCannotBypassDispatchIdentity(t *testing.T) {
 }
 
 func TestMTLSTimedRecoveryAfterProvingCapacityReturns(t *testing.T) {
-	f := newMTLSCoordinator(t, coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: 45 * time.Second})
+	f := newMTLSCoordinator(t, coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: 45 * time.Second, ShutdownTimeout: defaultShutdownTimeout})
 	fixture := newIntegrationZKFixture(t)
 	f.s.preimageVerifier = fixture.verifier
 	record := preimageRecord(11106, 7, "old-worker", JobRecovering, fixture.payload)

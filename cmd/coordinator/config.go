@@ -14,21 +14,29 @@ import (
 
 const defaultAttemptLease = 5 * time.Second
 
+// Independent of lease/task timeouts; allows persistence and handler cleanup.
+const defaultShutdownTimeout = 30 * time.Second
+
 type coordinatorExecutionConfig struct {
-	ListenAddress string
-	AttemptLease  time.Duration
+	ListenAddress   string
+	AttemptLease    time.Duration
+	ShutdownTimeout time.Duration
 }
 
 func coordinatorExecutionFlags(fs *flag.FlagSet) *coordinatorExecutionConfig {
 	c := &coordinatorExecutionConfig{}
 	fs.StringVar(&c.ListenAddress, "listen", ":50050", "coordinator TCP listen address")
 	fs.DurationVar(&c.AttemptLease, "attempt-lease", defaultAttemptLease, "positive per-attempt lease duration")
+	fs.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", defaultShutdownTimeout, "positive total shutdown budget; expiration forces process exit")
 	return c
 }
 
 func (c coordinatorExecutionConfig) validate() error {
 	if c.AttemptLease <= 0 {
 		return errors.New("-attempt-lease must be positive")
+	}
+	if c.ShutdownTimeout <= 0 {
+		return errors.New("-shutdown-timeout must be positive")
 	}
 	return validateCoordinatorListenAddress(c.ListenAddress)
 }

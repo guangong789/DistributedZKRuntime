@@ -6,6 +6,7 @@ import (
 	"net/url"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/rpcauth"
+	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -59,8 +60,11 @@ func loadWorkerTransport(workerID, address string, c rpcauth.CoordinatorClientCo
 	return &workerTransport{material, coordinator, client}, nil
 }
 
-func (t *workerTransport) newServer(service *WorkerService) (*grpc.Server, error) {
-	return rpcauth.NewWorkerServer(t.material, t.coordinator, service)
+func (t *workerTransport) newServer(service runtimepb.WorkerServiceServer, lifecycle *workerLifecycle) (*grpc.Server, error) {
+	if service == nil || lifecycle == nil {
+		return nil, errors.New("Worker service and lifecycle required")
+	}
+	return rpcauth.NewWorkerServer(t.material, t.coordinator, &admittedWorkerService{WorkerServiceServer: service, lifecycle: lifecycle})
 }
 
 // Both startup registration and the long-lived heartbeat connection use these

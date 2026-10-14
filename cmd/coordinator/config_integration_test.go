@@ -120,7 +120,7 @@ func TestConfiguredLeaseAllowsControlledProofOverMTLS(t *testing.T) {
 	plainCtx, stopPlain := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer stopPlain()
 	snapshot := f.snapshot()
-	if response, err := runtimepb.NewCoordinatorServiceClient(plain).SubmitJob(plainCtx, &runtimepb.SubmitJobRequest{JobId: jobID + 1}); err == nil || response != nil {
+	if response, err := runtimepb.NewCoordinatorServiceClient(plain).SubmitJob(plainCtx, &runtimepb.SubmitJobRequest{JobId: jobID + 1, TaskType: "hash", Payload: "hello", TimeoutMs: 1000}); err == nil || response != nil {
 		t.Fatal("configured production listener accepted plaintext")
 	}
 	f.assertUnchanged(t, snapshot, jobID+1)

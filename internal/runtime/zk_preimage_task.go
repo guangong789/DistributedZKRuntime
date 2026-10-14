@@ -60,5 +60,11 @@ func (t ZKPreimageTask) Execute(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("prove preimage: %w", err)
 	}
 
-	return base64.StdEncoding.EncodeToString(proofBytes), nil
+	output := base64.StdEncoding.EncodeToString(proofBytes)
+	// Protect direct Task callers after all proof encoding. ExecuteJob separately
+	// owns the final Result decision; neither checkpoint emits lifecycle metrics.
+	if err := resultContextError(ctx, time.Now()); err != nil {
+		return "", err
+	}
+	return output, nil
 }

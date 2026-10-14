@@ -4,141 +4,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	nativeMiMC "github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
-	"github.com/consensys/gnark/backend/groth16"
-	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/frontend/cs/r1cs"
 )
 
-func TestPreimageProof(t *testing.T) {
-	var circuit PreimageCircuit
-
-	ccs, err := frontend.Compile(
-		ecc.BN254.ScalarField(),
-		r1cs.NewBuilder,
-		&circuit,
-	)
-	if err != nil {
-		t.Fatalf("compile preimage circuit: %v", err)
-	}
-
-	pk, vk, err := groth16.Setup(ccs)
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	var secret fr.Element
-	secret.SetInt64(42)
-
-	hasher := nativeMiMC.NewMiMC()
-
-	secretBytes := secret.Bytes()
-
-	if _, err := hasher.Write(secretBytes[:]); err != nil {
-		t.Fatalf("hash secret: %v", err)
-	}
-
-	digestBytes := hasher.Sum(nil)
-
-	var digest fr.Element
-	digest.SetBytes(digestBytes)
-
-	assignment := PreimageCircuit{
-		Preimage: 42,
-		Hash:     digest,
-	}
-
-	witness, err := frontend.NewWitness(
-		&assignment,
-		ecc.BN254.ScalarField(),
-	)
-	if err != nil {
-		t.Fatalf("create witness: %v", err)
-	}
-
-	publicWitness, err := witness.Public()
-	if err != nil {
-		t.Fatalf("create public witness: %v", err)
-	}
-
-	proof, err := groth16.Prove(
-		ccs,
-		pk,
-		witness,
-	)
-	if err != nil {
-		t.Fatalf("prove: %v", err)
-	}
-
-	if err := groth16.Verify(
-		proof,
-		vk,
-		publicWitness,
-	); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-}
-
-func TestPreimageProofRejectsWrongSecret(t *testing.T) {
-	var circuit PreimageCircuit
-
-	ccs, err := frontend.Compile(
-		ecc.BN254.ScalarField(),
-		r1cs.NewBuilder,
-		&circuit,
-	)
-	if err != nil {
-		t.Fatalf("compile preimage circuit: %v", err)
-	}
-
-	pk, _, err := groth16.Setup(ccs)
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	var committedSecret fr.Element
-	committedSecret.SetInt64(42)
-
-	hasher := nativeMiMC.NewMiMC()
-
-	secretBytes := committedSecret.Bytes()
-
-	if _, err := hasher.Write(secretBytes[:]); err != nil {
-		t.Fatalf("hash secret: %v", err)
-	}
-
-	digestBytes := hasher.Sum(nil)
-
-	var digest fr.Element
-	digest.SetBytes(digestBytes)
-
-	assignment := PreimageCircuit{
-		Preimage: 43,
-		Hash:     digest,
-	}
-
-	witness, err := frontend.NewWitness(
-		&assignment,
-		ecc.BN254.ScalarField(),
-	)
-	if err != nil {
-		t.Fatalf("create witness: %v", err)
-	}
-
-	_, err = groth16.Prove(
-		ccs,
-		pk,
-		witness,
-	)
-
-	if err == nil {
-		t.Fatal("expected proving to fail for wrong preimage")
-	}
-}
-
-func TestPreimageSetupLoadProveVerify(t *testing.T) {
+func newPreimageTestKeys(t testing.TB) (string, string) {
+	t.Helper()
 	dir := t.TempDir()
 
 	pkPath := filepath.Join(dir, "proving.key")
@@ -147,6 +18,11 @@ func TestPreimageSetupLoadProveVerify(t *testing.T) {
 	if err := GeneratePreimageSetup(pkPath, vkPath); err != nil {
 		t.Fatalf("generate setup: %v", err)
 	}
+	return pkPath, vkPath
+}
+
+func TestPreimageSetupLoadProveVerify(t *testing.T) {
+	pkPath, vkPath := newPreimageTestKeys(t)
 
 	prover, err := LoadPreimageProver(pkPath)
 	if err != nil {
@@ -158,48 +34,44 @@ func TestPreimageSetupLoadProveVerify(t *testing.T) {
 		t.Fatalf("load verifier: %v", err)
 	}
 
-	digest := ComputePreimageDigest(42)
+	// Keep an independent byte-oriented digest calculation to check the public
+	// statement, rather than relying only on the production digest helper.
+	var secret fr.Element
+	secret.SetInt64(42)
+	secretBytes := secret.Bytes()
+	hasher := nativeMiMC.NewMiMC()
+	if _, err := hasher.Write(secretBytes[:]); err != nil {
+		t.Fatalf("hash secret: %v", err)
+	}
+	var digest fr.Element
+	digest.SetBytes(hasher.Sum(nil))
+	if got := ComputePreimageDigest(42); got != digest {
+		t.Fatal("public digest differs from byte-oriented MiMC hash")
+	}
 
 	proof, err := prover.Prove(42, digest)
 	if err != nil {
 		t.Fatalf("prove: %v", err)
 	}
 
-	if err := verifier.Verify(proof, digest); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-}
-
-func TestPreimageVerifyRejectsWrongDigest(t *testing.T) {
-	dir := t.TempDir()
-
-	pkPath := filepath.Join(dir, "proving.key")
-	vkPath := filepath.Join(dir, "verifying.key")
-
-	if err := GeneratePreimageSetup(pkPath, vkPath); err != nil {
-		t.Fatalf("generate setup: %v", err)
-	}
-
-	prover, err := LoadPreimageProver(pkPath)
-	if err != nil {
-		t.Fatalf("load prover: %v", err)
+	for _, tc := range []struct {
+		name    string
+		digest  fr.Element
+		wantErr bool
+	}{
+		{"matching public digest", digest, false},
+		{"wrong public digest", ComputePreimageDigest(43), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifier.Verify(proof, tc.digest); (err != nil) != tc.wantErr {
+				t.Fatalf("verify error = %v, want error = %t", err, tc.wantErr)
+			}
+		})
 	}
 
-	verifier, err := LoadPreimageVerifier(vkPath)
-	if err != nil {
-		t.Fatalf("load verifier: %v", err)
-	}
-
-	digest42 := ComputePreimageDigest(42)
-
-	digest43 := ComputePreimageDigest(43)
-
-	proof, err := prover.Prove(42, digest42)
-	if err != nil {
-		t.Fatalf("prove: %v", err)
-	}
-
-	if err := verifier.Verify(proof, digest43); err == nil {
-		t.Fatal("expected verification to fail with wrong public digest")
-	}
+	t.Run("wrong secret", func(t *testing.T) {
+		if _, err := prover.Prove(43, digest); err == nil {
+			t.Fatal("expected proving to fail for wrong preimage")
+		}
+	})
 }

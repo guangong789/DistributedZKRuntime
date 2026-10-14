@@ -38,6 +38,7 @@ func TestCoordinatorExecutionConfiguration(t *testing.T) {
 
 func TestCoordinatorExecutionRejectsInvalidConfiguration(t *testing.T) {
 	for _, args := range [][]string{
+		{"-shutdown-timeout", "0"}, {"-shutdown-timeout", "-1s"}, {"-shutdown-timeout", "invalid"}, {"-shutdown-timeout", "9223372036854775808ns"},
 		{"-attempt-lease", "0"}, {"-attempt-lease", "-1s"}, {"-attempt-lease", "invalid"}, {"-attempt-lease", "9223372036854775808ns"},
 		{"-listen", ""}, {"-listen", "127.0.0.1"}, {"-listen", "localhost:"}, {"-listen", "localhost:65536"},
 		{"-listen", "localhost:-1"}, {"-listen", "localhost:+1"}, {"-listen", "localhost:port"}, {"-listen", "localhost:050050"},
@@ -66,7 +67,7 @@ func TestCoordinatorExecutionRejectsInvalidConfiguration(t *testing.T) {
 }
 
 func TestCoordinatorListenerBindsRequestedAddress(t *testing.T) {
-	c := coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: time.Second}
+	c := coordinatorExecutionConfig{ListenAddress: "127.0.0.1:0", AttemptLease: time.Second, ShutdownTimeout: defaultShutdownTimeout}
 	listener, err := c.listen()
 	if err != nil {
 		t.Fatal(err)

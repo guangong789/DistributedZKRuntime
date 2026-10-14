@@ -214,8 +214,19 @@ func TestPreimageJobRecoversAcrossSQLiteCoordinatorRestart(t *testing.T) {
 			if err != nil || !ok || persisted != running2 {
 				t.Errorf("Running Attempt 2 was not persisted before dispatch: record=%+v found=%v error=%v", persisted, ok, err)
 			}
+			timeout, err := runtime.TaskTimeoutFromMilliseconds(req.TimeoutMs)
+			if err != nil {
+				return nil, err
+			}
+			before := time.Now()
+			jobCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			deadline, ok := jobCtx.Deadline()
+			if !ok || jobCtx.Err() != nil || deadline.Before(before.Add(timeout)) || deadline.After(time.Now().Add(timeout)) {
+				t.Error("restarted task did not receive a fresh relative execution budget")
+			}
 			task := runtime.ZKPreimageTask{Payload: req.Payload, Prover: prover, WitnessStore: witnesses}
-			result := runtime.ExecuteJob(ctx, runtime.Job{ID: int(req.JobId), Task: task, Status: runtime.JobRunning})
+			result := runtime.ExecuteJob(jobCtx, runtime.Job{ID: int(req.JobId), Task: task, Status: runtime.JobRunning})
 			proofOutput <- result.Output
 			errText := ""
 			if result.Err != nil {

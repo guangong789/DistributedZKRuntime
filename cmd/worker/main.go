@@ -9,11 +9,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/guangong789/DistributedZKRuntime/internal/metrics"
 	prommetrics "github.com/guangong789/DistributedZKRuntime/internal/metrics/prometheus"
+	"github.com/guangong789/DistributedZKRuntime/internal/rpcauth"
 	workerheartbeat "github.com/guangong789/DistributedZKRuntime/internal/workerheartbeat"
 	"github.com/guangong789/DistributedZKRuntime/internal/zk"
 	runtimepb "github.com/guangong789/DistributedZKRuntime/proto"
@@ -90,6 +92,10 @@ func (s *WorkerService) ExecuteJob(
 	ctx context.Context,
 	req *runtimepb.ExecuteJobRequest,
 ) (*runtimepb.ExecuteJobResponse, error) {
+	timeout, err := runtime.TaskTimeoutFromMilliseconds(req.TimeoutMs)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	task, err := buildTask(
 		req.TaskType,
 		req.Payload,
@@ -114,8 +120,6 @@ func (s *WorkerService) ExecuteJob(
 		preimageTask.Metrics = metrics.Resolve(s.metrics)
 		task = preimageTask
 	}
-
-	timeout := time.Duration(req.TimeoutMs) * time.Millisecond
 
 	jobCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -149,11 +153,15 @@ func (s *WorkerService) ExecuteJob(
 }
 
 func registerWithCoordinator(
+	parent context.Context,
 	workerID string,
 	workerAddress string,
 	coordinatorAddress string,
 	transport credentials.TransportCredentials,
 ) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	conn, err := newCoordinatorConnection(coordinatorAddress, transport)
 	if err != nil {
 		return err
@@ -163,7 +171,7 @@ func registerWithCoordinator(
 	client := runtimepb.NewCoordinatorServiceClient(conn)
 
 	ctx, cancel := context.WithTimeout(
-		context.Background(),
+		parent,
 		3*time.Second,
 	)
 	defer cancel()
@@ -190,15 +198,18 @@ func registerWithCoordinator(
 }
 
 func runHeartbeat(
+	parent context.Context,
 	workerID string,
 	workerAddress string,
 	coordinatorAddress string,
 	transport credentials.TransportCredentials,
-) {
+) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	conn, err := newCoordinatorConnection(coordinatorAddress, transport)
 	if err != nil {
-		log.Panicln("heartbeat connection failed:", err)
-		return
+		return fmt.Errorf("heartbeat connection: %w", err)
 	}
 	defer conn.Close()
 
@@ -207,21 +218,26 @@ func runHeartbeat(
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-parent.Done():
+			return parent.Err()
+		case <-ticker.C:
+		}
+		if err := parent.Err(); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(
-			context.Background(),
+			parent,
 			500*time.Millisecond,
 		)
 
 		err := workerheartbeat.Send(ctx, client, workerID, workerAddress)
 		cancel()
 
-		if err != nil {
+		if err != nil && parent.Err() == nil {
 			log.Println("heartbeat failed:", err)
-			continue
 		}
-
-		fmt.Println("heartbeat sent")
 	}
 }
 
@@ -264,98 +280,144 @@ func main() {
 
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9091", "metrics HTTP listen address (required; loopback by default)")
 	maxConcurrentProofs := flag.Int("max-concurrent-proofs", 1, "maximum simultaneous preimage proving calls (positive)")
+	shutdownTimeout := workerShutdownFlag(flag.CommandLine)
 	security := workerSecurityFlags(flag.CommandLine)
 	flag.Parse()
-	transport, err := loadWorkerTransport(*workerID, *coordinatorAddress, *security)
-	if err != nil {
-		log.Fatalf("worker mTLS configuration: %v", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cfg := workerConfig{ID: *workerID, ListenAddress: *listenAddress, AdvertiseAddress: *advertiseAddress,
+		CoordinatorAddress: *coordinatorAddress, ProvingKeyPath: *provingKeyPath, WitnessFilePath: *witnessFilePath,
+		MetricsAddress: *metricsAddress, MaxConcurrentProofs: *maxConcurrentProofs, ShutdownTimeout: *shutdownTimeout, Security: *security}
+	if err := runWorker(ctx, cfg); err != nil {
+		// Helpers report incomplete shutdown; only the process entry point exits.
+		log.Print(err)
+		os.Exit(1)
 	}
-	provingLimiter, err := runtime.NewProvingLimiter(*maxConcurrentProofs)
-	if err != nil {
-		log.Fatal(err)
-	}
+}
 
-	// Load the proving capability once at worker startup.
-	preimageProver, err := zk.LoadPreimageProver(*provingKeyPath)
-	if err != nil {
-		log.Fatal(err)
-	}
+func workerShutdownFlag(fs *flag.FlagSet) *time.Duration {
+	return fs.Duration("shutdown-timeout", defaultWorkerShutdownTimeout, "positive total shutdown budget, independent of task deadlines; expiration forces process exit")
+}
 
-	witnessStore, err := runtime.LoadMemoryWitnessStore(*witnessFilePath)
-	if err != nil {
-		log.Fatalf("failed to load witness store: %v", err)
-	}
+type workerConfig struct {
+	ID, ListenAddress, AdvertiseAddress, CoordinatorAddress string
+	ProvingKeyPath, WitnessFilePath, MetricsAddress         string
+	MaxConcurrentProofs                                     int
+	ShutdownTimeout                                         time.Duration
+	Security                                                rpcauth.CoordinatorClientConfig
+}
 
+func runWorker(ctx context.Context, cfg workerConfig) (runErr error) {
+	if cfg.ShutdownTimeout <= 0 {
+		return errors.New("-shutdown-timeout must be positive")
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	p := newWorkerProcess(cfg.ShutdownTimeout)
+	defer func() { runErr = errors.Join(runErr, p.shutdown()) }()
+	ready, backgroundDone := make(chan struct{}), make(chan struct{})
+	p.resourcesReady, p.backgroundDone = ready, backgroundDone
+	backgroundResult := make(chan error, 1)
+	go func() {
+		defer close(backgroundDone)
+		var once sync.Once
+		publish := func() { once.Do(func() { close(ready) }) }
+		defer publish() // Also publish partial resources on any startup error.
+		backgroundResult <- initializeWorker(p, cfg, publish)
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-backgroundResult:
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err == nil {
+			return errors.New("worker background loop stopped unexpectedly")
+		}
+		return err
+	case err := <-p.serveResult:
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err == nil {
+			return errors.New("worker gRPC server stopped unexpectedly")
+		}
+		return fmt.Errorf("worker gRPC server: %w", err)
+	}
+}
+
+// One owned producer initializes resources, registers, and runs heartbeat. It
+// publishes resource fields before registration so Stop need not wait for an
+// in-flight registration or its connection Close. No resources change afterward.
+func initializeWorker(p *workerProcess, cfg workerConfig, publish func()) error {
+	ctx := p.lifecycle.ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	transport, err := loadWorkerTransport(cfg.ID, cfg.CoordinatorAddress, cfg.Security)
+	if err != nil {
+		return fmt.Errorf("worker mTLS configuration: %w", err)
+	}
+	limiter, err := runtime.NewProvingLimiter(cfg.MaxConcurrentProofs)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	prover, err := zk.LoadPreimageProver(cfg.ProvingKeyPath)
+	if err != nil {
+		return fmt.Errorf("load preimage prover: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	witnesses, err := runtime.LoadMemoryWitnessStore(cfg.WitnessFilePath)
+	if err != nil {
+		return fmt.Errorf("load witness store: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	registry := prom.NewRegistry()
 	observer, err := prommetrics.New(registry)
 	if err != nil {
-		log.Fatalf("initialize metrics: %v", err)
+		return fmt.Errorf("initialize metrics: %w", err)
 	}
-	workerService := &WorkerService{
-		preimageProver: preimageProver,
-		witnessStore:   witnessStore,
-		provingLimiter: provingLimiter,
-		metrics:        observer,
-	}
-	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)
+	service := &WorkerService{preimageProver: prover, witnessStore: witnesses, provingLimiter: limiter, metrics: observer}
+	metricsServer, err := prommetrics.StartHTTP(cfg.MetricsAddress, registry)
 	if err != nil {
-		log.Fatalf("start metrics HTTP server: %v", err)
+		return fmt.Errorf("start metrics HTTP server: %w", err)
 	}
+	p.shutdownMetrics = metricsServer.Shutdown
 	fmt.Printf("worker metrics listening on http://%s/metrics\n", metricsServer.Addr())
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("metrics HTTP shutdown: %v", err)
-		}
-	}()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	listener, err := net.Listen("tcp", *listenAddress)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
-		log.Fatalf("listen on %s: %v", *listenAddress, err)
+		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
 	}
-
-	server, err := transport.newServer(workerService)
+	p.listener = listener
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	server, err := transport.newServer(service, p.lifecycle)
 	if err != nil {
-		log.Fatalf("worker mTLS server configuration: %v", err)
+		return fmt.Errorf("worker mTLS server configuration: %w", err)
 	}
-
-	// Start serving before registering with the coordinator so that
-	// the worker is reachable as soon as the coordinator schedules it.
-	go func() {
-		fmt.Printf(
-			"worker %s listening on %s\n",
-			*workerID,
-			*listenAddress,
-		)
-
-		if err := server.Serve(listener); err != nil {
-			log.Fatalf("worker gRPC server: %v", err)
-		}
-	}()
-
-	// Register once during startup.
-	if err := registerWithCoordinator(
-		*workerID,
-		*advertiseAddress,
-		*coordinatorAddress,
-		transport.client,
-	); err != nil {
-		log.Fatalf("register with coordinator: %v", err)
+	// Serve before registration so recovery can immediately schedule this Worker.
+	p.start(server, listener)
+	publish()
+	fmt.Printf("worker %s listening on %s\n", cfg.ID, listener.Addr())
+	if err := registerWithCoordinator(ctx, cfg.ID, cfg.AdvertiseAddress, cfg.CoordinatorAddress, transport.client); err != nil {
+		return fmt.Errorf("register with coordinator: %w", err)
 	}
-
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fmt.Println("worker registered successfully")
-
-	// Heartbeats start after the initial registration succeeds.
-	go runHeartbeat(
-		*workerID,
-		*advertiseAddress,
-		*coordinatorAddress,
-		transport.client,
-	)
-
-	<-ctx.Done()
-	server.Stop()
+	return runHeartbeat(ctx, cfg.ID, cfg.AdvertiseAddress, cfg.CoordinatorAddress, transport.client)
 }

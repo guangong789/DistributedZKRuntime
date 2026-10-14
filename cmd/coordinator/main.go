@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -41,7 +42,10 @@ type CoordinatorServer struct {
 	// Configure before serving; callbacks may run concurrently.
 	onDispatchDone func(jobID, attemptID int64)
 
-	jobStore JobStore
+	jobStore  JobStore
+	lifecycle *coordinatorLifecycle
+	// Joined only after all admitted handlers and recovery producers have exited.
+	dispatchWG sync.WaitGroup
 	// Configure before serving. Worker readiness notifications coalesce.
 	recoveryReady chan struct{}
 
@@ -99,91 +103,121 @@ func main() {
 	execution := coordinatorExecutionFlags(flag.CommandLine)
 	security := coordinatorSecurityFlags(flag.CommandLine)
 	flag.Parse()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runCoordinator(ctx, *execution, *security, *dbPath, *verifyingKeyPath, *metricsAddress); err != nil {
+		// Incomplete shutdown must not run deferred resource closure. Unfinished
+		// Running records retain the existing crash-recovery semantics on restart.
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+// runCoordinator owns startup and runtime resources. All exits, including startup
+// and Serve failures, use the same shutdown protocol; it never calls os.Exit.
+func runCoordinator(ctx context.Context, execution coordinatorExecutionConfig, security coordinatorSecurityConfig, dbPath, verifyingKeyPath, metricsAddress string) (runErr error) {
 	if err := execution.validate(); err != nil {
-		log.Fatalf("coordinator execution configuration: %v", err)
+		return fmt.Errorf("coordinator execution configuration: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	transport, err := security.load()
 	if err != nil {
-		log.Fatalf("coordinator mTLS configuration: %v", err)
+		return fmt.Errorf("coordinator mTLS configuration: %w", err)
 	}
+	coordinator := &CoordinatorServer{
+		workers: make(map[string]WorkerInfo), jobAttempts: make(map[int64]int64),
+		leases: make(map[int64]JobLease), activeJobs: make(map[int64]struct{}),
+		leaseDuration: execution.AttemptLease, recoveryReady: make(chan struct{}, 1),
+		workerCredentials: transport.workerCredentials,
+	}
+	process := newCoordinatorProcess(coordinator, execution.ShutdownTimeout)
+	defer func() { runErr = errors.Join(runErr, process.shutdown()) }()
+	// Startup is an owned producer too: a signal can select the shutdown
+	// deadline even if a non-cancelable startup store operation is still blocked.
+	startupDone := make(chan struct{})
+	process.startupDone = startupDone
+	initialized := make(chan error, 1)
+	go func() {
+		defer close(startupDone)
+		initialized <- initializeCoordinator(process, execution, transport, dbPath, verifyingKeyPath, metricsAddress)
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-initialized:
+		if err != nil {
+			return err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-process.serveResult:
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err == nil {
+			return errors.New("coordinator gRPC server stopped unexpectedly")
+		}
+		return fmt.Errorf("coordinator gRPC server: %w", err)
+	}
+}
 
-	store, err := NewSQLiteJobStore(*dbPath)
+func initializeCoordinator(process *coordinatorProcess, execution coordinatorExecutionConfig, transport *coordinatorTransport, dbPath, verifyingKeyPath, metricsAddress string) error {
+	coordinator := process.service
+	ctx := coordinator.lifecycle.ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	store, err := NewSQLiteJobStore(dbPath)
 	if err != nil {
-		log.Fatalf("failed to open job store: %v", err)
+		return fmt.Errorf("open job store: %w", err)
 	}
-	defer store.Close()
-
-	preimageVerifier, err := zk.LoadPreimageVerifier(*verifyingKeyPath)
+	process.closeStore = store.Close
+	coordinator.jobStore = store
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	preimageVerifier, err := zk.LoadPreimageVerifier(verifyingKeyPath)
 	if err != nil {
-		log.Fatalf("failed to load preimage verifier: %v", err)
+		return fmt.Errorf("load preimage verifier: %w", err)
 	}
-
+	coordinator.preimageVerifier = preimageVerifier
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	registry := prom.NewRegistry()
 	observer, err := prommetrics.New(registry)
 	if err != nil {
-		log.Fatalf("initialize metrics: %v", err)
+		return fmt.Errorf("initialize metrics: %w", err)
 	}
-	coordinator := &CoordinatorServer{
-		workers:           make(map[string]WorkerInfo),
-		jobAttempts:       make(map[int64]int64),
-		leases:            make(map[int64]JobLease),
-		activeJobs:        make(map[int64]struct{}),
-		jobStore:          store,
-		leaseDuration:     execution.AttemptLease,
-		recoveryReady:     make(chan struct{}, 1),
-		preimageVerifier:  preimageVerifier,
-		metrics:           observer,
-		workerCredentials: transport.workerCredentials,
-	}
-
-	metricsServer, err := prommetrics.StartHTTP(*metricsAddress, registry)
+	coordinator.metrics = observer
+	metricsServer, err := prommetrics.StartHTTP(metricsAddress, registry)
 	if err != nil {
-		log.Fatalf("start metrics HTTP server: %v", err)
+		return fmt.Errorf("start metrics HTTP server: %w", err)
 	}
+	process.shutdownMetrics = metricsServer.Shutdown
 	fmt.Printf("coordinator metrics listening on http://%s/metrics\n", metricsServer.Addr())
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("metrics HTTP shutdown: %v", err)
-		}
-	}()
-
-	if err := coordinator.recoverRunningJobs(); err != nil {
-		log.Fatalf("failed to recover running jobs: %v", err)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-
+	if err := coordinator.recoverRunningJobs(); err != nil {
+		return fmt.Errorf("recover running jobs: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	listener, err := execution.listen()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("coordinator listen: %w", err)
 	}
-
-	server := transport.newServer(coordinator)
-
+	process.listener = listener
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	process.start(transport.newServer(coordinator), listener)
 	fmt.Printf("coordinator mTLS listening on %s\n", listener.Addr())
-
-	go coordinator.runLivenessMonitor(
-		time.Second,
-		3*time.Second,
-	)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	recoveryDone := make(chan struct{})
-	go func() {
-		defer close(recoveryDone)
-		coordinator.runRecoveryLoop(ctx)
-	}()
-	go func() {
-		<-ctx.Done()
-		server.Stop()
-	}()
-
-	err = server.Serve(listener)
-	cancel()
-	// Recovery must stop using the store before it is closed.
-	<-recoveryDone
-	if err != nil {
-		log.Fatal(err)
-	}
+	return nil
 }

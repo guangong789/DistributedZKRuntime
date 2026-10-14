@@ -212,12 +212,12 @@ func TestMetricsSubmissionRejectedBeforeExecution(t *testing.T) {
 		t.Fatal("cannot preclaim")
 	}
 	defer s.releaseJob(904)
-	if _, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 904}); status.Code(err) != codes.AlreadyExists {
+	if _, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 904, TimeoutMs: 1000}); status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("ownership error=%v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 905}); !errors.Is(err, context.Canceled) {
+	if _, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 905, TimeoutMs: 1000}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled submission=%v", err)
 	}
 	if len(observer.snapshot()) != 0 {

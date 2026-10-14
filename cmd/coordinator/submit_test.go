@@ -64,7 +64,7 @@ func useTestWorkerTransport(s *CoordinatorServer) {
 }
 
 func TestSubmitRetryAndFencing(t *testing.T) {
-	for _, scenario := range []string{"success", "task failure", "rpc failure", "worker canceled", "wrong job", "wrong attempt", "expired lease", "superseded attempt", "exhausted retries"} {
+	for _, scenario := range []string{"success", "task failure", "rpc failure", "rpc deadline", "worker canceled", "wrong job", "wrong attempt", "expired lease", "superseded attempt", "exhausted retries"} {
 		t.Run(scenario, func(t *testing.T) {
 			s := newTestCoordinator()
 			var firstCalls, secondCalls atomic.Int32
@@ -82,6 +82,8 @@ func TestSubmitRetryAndFencing(t *testing.T) {
 					resp.Status, resp.Error, resp.Output = "Failed", "task failed", ""
 				case "rpc failure", "exhausted retries":
 					return nil, status.Error(codes.Unavailable, "worker unavailable")
+				case "rpc deadline":
+					return nil, status.Error(codes.DeadlineExceeded, "worker RPC deadline")
 				case "worker canceled":
 					return nil, status.Error(codes.Canceled, "worker canceled independently")
 				case "wrong job":
@@ -171,7 +173,7 @@ func TestSubmitCanceledParentDoesNotDispatch(t *testing.T) {
 		} else {
 			cancel()
 		}
-		resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 1})
+		resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 1, TimeoutMs: 1000})
 		cancel()
 		if resp != nil || !errors.Is(err, want) || calls.Load() != 0 || len(s.jobAttempts) != 0 || len(s.leases) != 0 {
 			t.Fatalf("canceled submission mutated state or returned wrong error: response=%v error=%v", resp, err)
@@ -200,7 +202,7 @@ func TestSubmitCancellationDuringRPCDoesNotRetry(t *testing.T) {
 		secondCalls.Add(1)
 		return successfulResult(req), nil
 	})
-	resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 500})
+	resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 500, TimeoutMs: 1000})
 	if resp != nil || !errors.Is(err, context.Canceled) || calls.Load() != 1 || s.jobAttempts[500] != 1 {
 		t.Fatalf("canceled RPC retried or returned wrong error: response=%v error=%v calls=%d", resp, err, calls.Load())
 	}
@@ -276,7 +278,7 @@ func TestSubmitLeaseExpiryRetriesWithLiveParent(t *testing.T) {
 		return successfulResult(req), nil
 	})
 
-	resp, err := s.SubmitJob(parentCtx, &runtimepb.SubmitJobRequest{JobId: 500})
+	resp, err := s.SubmitJob(parentCtx, &runtimepb.SubmitJobRequest{JobId: 500, TimeoutMs: 1000})
 	if err != nil || resp == nil || resp.JobId != 500 || resp.Status != "Succeeded" || resp.AttemptId != 2 || resp.Output != "done" || resp.Error != "" {
 		t.Fatalf("lease retry failed: response=%v error=%v", resp, err)
 	}
@@ -370,7 +372,7 @@ func TestSubmitNoAliveWorkers(t *testing.T) {
 		for id := range workers {
 			s.workerOrder = append(s.workerOrder, id)
 		}
-		resp, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 1})
+		resp, err := s.SubmitJob(context.Background(), &runtimepb.SubmitJobRequest{JobId: 1, TimeoutMs: 1000})
 		if resp != nil || status.Code(err) != codes.Unavailable || len(s.jobAttempts) != 0 {
 			t.Fatalf("expected no-worker error without allocating attempt: %v %v", resp, err)
 		}
@@ -398,7 +400,7 @@ func TestRetrySkipsDeadWorker(t *testing.T) {
 	s.checkWorkerLiveness(time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 1})
+	resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 1, TimeoutMs: 1000})
 	lease, _ := s.getLease(1)
 	if err != nil || resp == nil || resp.AttemptId != 2 || lease.WorkerID != "last" || deadCalls.Load() != 0 {
 		t.Fatalf("retry did not skip dead worker: response=%v error=%v lease=%+v dead calls=%d", resp, err, lease, deadCalls.Load())
@@ -538,7 +540,7 @@ func TestLateSuccessfulAttemptCannotReplaceAcceptedRetry(t *testing.T) {
 	}
 	submitted := make(chan submissionResult, 1)
 	go func() {
-		resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 500})
+		resp, err := s.SubmitJob(ctx, &runtimepb.SubmitJobRequest{JobId: 500, TimeoutMs: 1000})
 		submitted <- submissionResult{resp: resp, err: err}
 	}()
 	waitAttempt := func(ch <-chan int64, want int64, label string) {

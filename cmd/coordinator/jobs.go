@@ -124,6 +124,38 @@ func (s *CoordinatorServer) persistSubmitCancellation(jobID, initialAttempt int6
 	return true, nil
 }
 
+// persistSubmitFailure closes only this submit session's published Running
+// generation. The caller retains ownership through Save, as with cancellation.
+// An expired lease must not prevent failure finalization. Cancellation is
+// checked again after Load; once Save succeeds the terminal commit wins.
+func (s *CoordinatorServer) persistSubmitFailure(ctx context.Context, jobID, initialAttempt, expectedAttempt int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	_, owned := s.activeJobs[jobID]
+	if s.jobStore == nil || !owned || expectedAttempt <= initialAttempt || expectedAttempt <= 0 || s.jobAttempts[jobID] != expectedAttempt {
+		return false, nil
+	}
+	current, ok, err := s.jobStore.Load(jobID)
+	if err != nil {
+		return false, fmt.Errorf("load current job: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !ok || current.JobID != jobID || current.State != JobRunning || current.AttemptID != expectedAttempt {
+		return false, nil
+	}
+	current.State = JobFailed
+	if err := s.jobStore.Save(current); err != nil {
+		return false, fmt.Errorf("save failed job: %w", err)
+	}
+	return true, nil
+}
+
 func (s *CoordinatorServer) recoverRunningJobs() error {
 	observer := metrics.Resolve(s.metrics)
 	if s.jobStore == nil {
@@ -140,7 +172,7 @@ func (s *CoordinatorServer) recoverRunningJobs() error {
 		if err != nil {
 			// Keep unsafe legacy rows untouched for explicit operator correction.
 			// Neither redispatch nor resave their original potentially private JSON.
-			fmt.Printf("startup recovery rejected job %d: invalid ZK public payload\n", record.JobID)
+			fmt.Printf("startup recovery rejected job %d: invalid job specification\n", record.JobID)
 			continue
 		}
 		record.Payload = spec.Payload
