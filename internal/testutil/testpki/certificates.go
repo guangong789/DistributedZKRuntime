@@ -36,7 +36,7 @@ type Files struct {
 	Pair          tls.Certificate
 }
 
-func New(t *testing.T) *CA {
+func New(t testing.TB) *CA {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -65,7 +65,7 @@ func (ca *CA) Roots() *x509.CertPool {
 
 // Issue allows tests to model CA-signed malformed/expired credentials without
 // weakening production loading. All files and keys are confined to t.TempDir.
-func (ca *CA) Issue(t *testing.T, identity string, change func(*x509.Certificate)) Files {
+func (ca *CA) Issue(t testing.TB, identity string, change func(*x509.Certificate)) Files {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

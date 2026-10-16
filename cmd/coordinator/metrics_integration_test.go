@@ -82,7 +82,7 @@ func integrationMetricsFromFamilies(families []*dto.MetricFamily) integrationMet
 	return view
 }
 
-func gatherIntegrationMetrics(t *testing.T, registry *prom.Registry) integrationMetricsView {
+func gatherIntegrationMetrics(t testing.TB, registry *prom.Registry) integrationMetricsView {
 	t.Helper()
 	families, err := registry.Gather()
 	if err != nil {
@@ -164,7 +164,7 @@ type integrationZKFixture struct {
 	payload   string
 }
 
-func newIntegrationZKFixture(t *testing.T) integrationZKFixture {
+func newIntegrationZKFixture(t testing.TB) integrationZKFixture {
 	t.Helper()
 	dir := t.TempDir()
 	pk, vk := filepath.Join(dir, "proving.key"), filepath.Join(dir, "verifying.key")

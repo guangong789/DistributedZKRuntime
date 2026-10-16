@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -423,31 +424,125 @@ func TestWorkerShutdownWaitsForStartupAndBackground(t *testing.T) {
 	}
 }
 
+var errWorkerListenerCleanupIncomplete = errors.New("listener observation cleanup incomplete")
+
+// Observe the original listener, independently of reachability of its old address.
+// An observation failure stays a failure even if cleanup subsequently closes it.
+func observeWorkerListenerClosed(listener net.Listener, budget time.Duration) (err error) {
+	type acceptResult struct {
+		err      error
+		accepted bool
+	}
+	result := make(chan acceptResult, 1)
+	acceptDone := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	go func() {
+		defer close(acceptDone)
+		conn, acceptErr := listener.Accept()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		result <- acceptResult{err: acceptErr, accepted: conn != nil}
+	}()
+	defer func() {
+		if err == nil {
+			return
+		}
+		closed := make(chan error, 1)
+		go func() { closed <- listener.Close() }()
+		cleanup, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+		defer cancelCleanup()
+		var pendingAccept <-chan struct{} = acceptDone
+		var pendingClose <-chan error = closed
+		for pendingAccept != nil || pendingClose != nil {
+			select {
+			case <-pendingAccept:
+				pendingAccept = nil
+			case closeErr := <-pendingClose:
+				pendingClose = nil
+				if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+					err = errors.Join(err, fmt.Errorf("%w: Close: %v", errWorkerListenerCleanupIncomplete, closeErr))
+				}
+			case <-cleanup.Done():
+				err = errors.Join(err, fmt.Errorf("%w: Accept joined=%t Close returned=%t", errWorkerListenerCleanupIncomplete, pendingAccept == nil, pendingClose == nil))
+				return
+			}
+		}
+	}()
+	select {
+	case observed := <-result:
+		select {
+		case <-acceptDone:
+		case <-ctx.Done():
+			return fmt.Errorf("original listener Accept did not join: %w", ctx.Err())
+		}
+		if observed.accepted || !errors.Is(observed.err, net.ErrClosed) {
+			return fmt.Errorf("original listener accepted=%t error=%v; want net.ErrClosed", observed.accepted, observed.err)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("original listener closure not observed: %w", ctx.Err())
+	}
+}
+
+func TestWorkerShutdownListenerClosureObservation(t *testing.T) {
+	for _, alreadyClosed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "closed_listener", false: "open_listener"}[alreadyClosed], func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			if alreadyClosed {
+				if err := listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = observeWorkerListenerClosed(listener, 100*time.Millisecond)
+			if alreadyClosed && err != nil {
+				t.Fatalf("closed listener was rejected: %v", err)
+			}
+			if !alreadyClosed && (!errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errWorkerListenerCleanupIncomplete)) {
+				t.Fatalf("open listener must fail observation and join after cleanup: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkerShutdownUnexpectedServeAndPartialStartup(t *testing.T) {
 	for _, serving := range []bool{false, true} {
-		p := newWorkerProcess(time.Second)
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if serving {
-			_ = listener.Close()
-			p.start(grpc.NewServer(), listener)
-			if err := awaitWorker(t, p.serveResult); err == nil {
-				t.Fatal("Serve failure was hidden")
+		t.Run(map[bool]string{false: "partial_startup", true: "unexpected_serve"}[serving], func(t *testing.T) {
+			p := newWorkerProcess(time.Second)
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-		} else {
-			p.listener = listener
-		}
-		var cleaned atomic.Bool
-		p.shutdownMetrics = func(context.Context) error { cleaned.Store(true); return nil }
-		if err := p.shutdown(); err != nil || !cleaned.Load() {
-			t.Fatalf("partial cleanup: %v", err)
-		}
-		if conn, err := net.DialTimeout("tcp", listener.Addr().String(), 100*time.Millisecond); err == nil {
-			conn.Close()
-			t.Fatal("listener left open")
-		}
+			t.Cleanup(func() {
+				if err := p.shutdown(); err != nil {
+					t.Errorf("fixture shutdown: %v", err)
+				}
+				if err := observeWorkerListenerClosed(listener, 200*time.Millisecond); err != nil {
+					t.Error(err)
+				}
+			})
+			if serving {
+				if err := listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				p.start(grpc.NewServer(), listener)
+				if err := awaitWorker(t, p.serveResult); err == nil {
+					t.Fatal("Serve failure was hidden")
+				}
+			} else {
+				p.listener = listener
+			}
+			var cleaned atomic.Bool
+			p.shutdownMetrics = func(context.Context) error { cleaned.Store(true); return nil }
+			if err := p.shutdown(); err != nil || !cleaned.Load() {
+				t.Fatalf("partial cleanup: %v", err)
+			}
+		})
 	}
 }
 

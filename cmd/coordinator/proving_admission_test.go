@@ -24,12 +24,16 @@ func (m *admissionProvingMetrics) ObserveZKProving(time.Duration) { m.samples.Ad
 // cmd/worker is a separate main package. These local test workers run the real
 // runtime task and model its busy RPC mapping, tested at WorkerService itself
 // in cmd/worker. No coordinator production behavior is replaced here.
-func limitedPreimageWorker(fixture integrationZKFixture, limiter *runtime.ProvingLimiter, observer metrics.Metrics, calls *atomic.Int32) func(context.Context, *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
+func limitedPreimageWorker(fixture integrationZKFixture, limiter *runtime.ProvingLimiter, observer metrics.Metrics, calls *atomic.Int32, factories ...func(context.Context, *runtimepb.ExecuteJobRequest) runtime.PreimageProver) func(context.Context, *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 	return func(ctx context.Context, req *runtimepb.ExecuteJobRequest) (*runtimepb.ExecuteJobResponse, error) {
 		calls.Add(1)
 		jobCtx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
 		defer cancel()
-		task := runtime.ZKPreimageTask{Payload: req.Payload, Prover: fixture.prover, WitnessStore: fixture.witnesses,
+		prover := runtime.PreimageProver(fixture.prover)
+		if len(factories) != 0 {
+			prover = factories[0](jobCtx, req)
+		}
+		task := runtime.ZKPreimageTask{Payload: req.Payload, Prover: prover, WitnessStore: fixture.witnesses,
 			Limiter: limiter, Metrics: observer}
 		result := runtime.ExecuteJob(jobCtx, runtime.Job{ID: int(req.JobId), Task: task, Status: runtime.JobRunning})
 		if errors.Is(result.Err, runtime.ErrProvingBusy) {
