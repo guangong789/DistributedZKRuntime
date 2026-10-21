@@ -183,22 +183,7 @@ func TestSQLiteJobStoreUpdatesExistingJob(t *testing.T) {
 		t.Fatalf("Save second record failed: %v", err)
 	}
 
-	got, ok, err := store.Load(500)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-
-	if !ok {
-		t.Fatal("expected job to exist")
-	}
-
-	if got != second {
-		t.Fatalf(
-			"got %+v, want %+v",
-			got,
-			second,
-		)
-	}
+	assertSQLiteJobRecord(t, store, second)
 }
 
 func TestSQLiteJobStoreListByStateAcrossReopen(t *testing.T) {
@@ -274,15 +259,10 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 			}
 		}
 
-		record, ok, err := storeA.Load(jobID)
-		if err != nil || !ok {
-			t.Fatalf("load before restart: record=%+v found=%v error=%v", record, ok, err)
-		}
-		if record.JobID != jobID || record.State != JobRunning ||
-			record.AttemptID != 3 || record.WorkerID != "worker-before-restart" ||
-			record.TaskType != taskType || record.Payload != payload || record.TimeoutMs != timeoutMs {
-			t.Fatalf("record before restart = %+v", record)
-		}
+		assertSQLiteJobRecord(t, storeA, JobRecord{
+			JobID: jobID, State: JobRunning, AttemptID: 3, WorkerID: "worker-before-restart",
+			TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+		})
 	}()
 
 	storeB, err := NewSQLiteJobStore(dbPath)
@@ -320,15 +300,10 @@ func TestStartAttemptContinuesAfterSQLiteReopen(t *testing.T) {
 		t.Fatalf("attempt after reopen = %d, want 4", attemptID)
 	}
 
-	record, ok, err := storeB.Load(jobID)
-	if err != nil || !ok {
-		t.Fatalf("load after new attempt: record=%+v found=%v error=%v", record, ok, err)
-	}
-	if record.JobID != jobID || record.State != JobRunning ||
-		record.AttemptID != 4 || record.WorkerID != "worker-after-restart" ||
-		record.TaskType != taskType || record.Payload != payload || record.TimeoutMs != timeoutMs {
-		t.Fatalf("record after restart = %+v", record)
-	}
+	assertSQLiteJobRecord(t, storeB, JobRecord{
+		JobID: jobID, State: JobRunning, AttemptID: 4, WorkerID: "worker-after-restart",
+		TaskType: taskType, Payload: payload, TimeoutMs: timeoutMs,
+	})
 	lease, ok := coordinatorB.getLease(jobID)
 	if !ok || lease.JobID != jobID || lease.AttemptID != 4 ||
 		lease.WorkerID != "worker-after-restart" {
