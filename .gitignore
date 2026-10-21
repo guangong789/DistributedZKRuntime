@@ -54,3 +54,7 @@ zk-artifacts/
 
 # Worker-local private witnesses
 private/
+
+# Python bytecode
+__pycache__/
+*.pyc
