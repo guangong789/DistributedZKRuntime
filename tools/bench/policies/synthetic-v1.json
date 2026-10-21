@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "wall_seconds": 1.0,
+  "barrier_seconds": 1.0,
+  "outer_seconds": 8.0,
+  "phase_seconds": {
+    "compile": 30,
+    "setup": 90,
+    "setup_wrong_vk": 90,
+    "prove": 60
+  },
+  "rss_stop_kib": 2097152,
+  "available_stop_kib": 2097152,
+  "stop_escalation_kib": 1048576,
+  "cpu_seconds": [
+    180,
+    190
+  ],
+  "core_bytes": 0,
+  "kernel_memory_limit": false,
+  "term_grace": 0.15,
+  "kill_grace": 0.5
+}

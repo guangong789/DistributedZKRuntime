@@ -1,0 +1,292 @@
+{
+  "schema": 1,
+  "milestone": "P4-C3-G1",
+  "status": "source promotion; no experiment authorization",
+  "source_archive_root": "~/benchmark-archives/DistributedZKRuntime",
+  "inspection": "p4-c3/inspection-20261018T015812Z",
+  "tooling_identity": "g1-source-promotion-1; historical schema retained; packaging identity differs",
+  "files": [
+    {
+      "destination": "tools/bench/README.md",
+      "destination_sha256": "7e1ee03fab74d3393a9f4b976178d57f2c735240e279f6253d7f9a51c3d8f48c",
+      "destination_bytes": 5021,
+      "sources": [],
+      "byte_identical": false,
+      "adaptation": "New G1-only package integration/documentation or independent bounded synthetic-test harness; no historical source claimed.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "manual scope and CLI review"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/__init__.py",
+      "destination_sha256": "068ca26c722b7bfe4a47ffec073828072c54e58c944c7a29d7e142027ac70a5d",
+      "destination_bytes": 84,
+      "sources": [],
+      "byte_identical": false,
+      "adaptation": "New G1-only package integration/documentation or independent bounded synthetic-test harness; no historical source claimed.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "syntax/import no-execution check"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/processes.py",
+      "destination_sha256": "148852d2f84c5be3b056e7692487f9795f716197a76f17ee1eb80edfe4ef4230",
+      "destination_bytes": 2445,
+      "sources": [
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/source/processes.py",
+          "sha256": "148852d2f84c5be3b056e7692487f9795f716197a76f17ee1eb80edfe4ef4230",
+          "bytes": 2445
+        }
+      ],
+      "byte_identical": true,
+      "adaptation": "None; byte-identical copy.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "test_pure: stat parser, exact matching, stale signal refusal",
+        "process_cases: real peer/executable and unrelated negative control; independent /proc cleanup"
+      ],
+      "unresolved_compatibility": [
+        "No policy SHA pre-spawn binding (G2 deferred).",
+        "No raw group member RSS stream or changed missing-process semantics (G3 deferred).",
+        "Unchanged auditor requires existing executable device/inode/hash and matching current UID; assertions need normal Python.",
+        "Sampled memory stops are not hard caps; group escape, supervisor SIGKILL/host/kernel failures remain outside cleanup assurances.",
+        "Python-peer synthetic barrier only; no Go executable or real Groth16 in G1."
+      ]
+    },
+    {
+      "destination": "tools/bench/resource_audit.py",
+      "destination_sha256": "ef55ca1ba2cf8b16080cd98ff871cfd5462723d3e729bc3037ca076083df67b3",
+      "destination_bytes": 3676,
+      "sources": [
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/audit/resources.py",
+          "sha256": "ef55ca1ba2cf8b16080cd98ff871cfd5462723d3e729bc3037ca076083df67b3",
+          "bytes": 3676
+        }
+      ],
+      "byte_identical": true,
+      "adaptation": "Filename only: resources.py to resource_audit.py; bytes unchanged.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "test_pure: readiness-only, independently recomputed post peak, seven false-evidence controls, missing/malformed",
+        "process_cases: actual captured success/timeout resource audits"
+      ],
+      "unresolved_compatibility": [
+        "No policy SHA pre-spawn binding (G2 deferred).",
+        "No raw group member RSS stream or changed missing-process semantics (G3 deferred).",
+        "Unchanged auditor requires existing executable device/inode/hash and matching current UID; assertions need normal Python.",
+        "Sampled memory stops are not hard caps; group escape, supervisor SIGKILL/host/kernel failures remain outside cleanup assurances.",
+        "Python-peer synthetic barrier only; no Go executable or real Groth16 in G1."
+      ]
+    },
+    {
+      "destination": "tools/bench/run_check.py",
+      "destination_sha256": "b31448c0114902b9f4888077e26f6153453c7f413bf73ad58244a31c3cd6b9ce",
+      "destination_bytes": 15878,
+      "sources": [
+        {
+          "archive_path": "p4-b1/runner-fix-20261017T013242Z/runner/run_check.py",
+          "sha256": "b31448c0114902b9f4888077e26f6153453c7f413bf73ad58244a31c3cd6b9ce",
+          "bytes": 15878
+        }
+      ],
+      "byte_identical": true,
+      "adaptation": "None; byte-identical copy.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "process_cases: runner success/nonzero, successful/failed parent+child, TERM resistance, timeout, monitor exception, unrelated negative control"
+      ],
+      "unresolved_compatibility": [
+        "No policy SHA pre-spawn binding (G2 deferred).",
+        "No raw group member RSS stream or changed missing-process semantics (G3 deferred).",
+        "Unchanged auditor requires existing executable device/inode/hash and matching current UID; assertions need normal Python.",
+        "Sampled memory stops are not hard caps; group escape, supervisor SIGKILL/host/kernel failures remain outside cleanup assurances.",
+        "Python-peer synthetic barrier only; no Go executable or real Groth16 in G1."
+      ]
+    },
+    {
+      "destination": "tools/bench/supervise.py",
+      "destination_sha256": "b5ba161156fa133e17bb8df26410db407a63362e0700cc23c4222a03fb16074a",
+      "destination_bytes": 13387,
+      "sources": [
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/source/supervise.py",
+          "sha256": "6caec01ed3b0e5820fc6b7015a020e8863d49bc8c0e2f59fb9b296afe85f4fa8",
+          "bytes": 13382
+        }
+      ],
+      "byte_identical": false,
+      "adaptation": "Package/direct-script import; RUNNER sibling and REPO derived from source location. No CLI, protocol, cadence, signals, resource formula or schema changes.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "process_cases: all six barrier cases and exec-image negative control",
+        "six CLI help checks across the three CLIs; unchanged argparse AST"
+      ],
+      "unresolved_compatibility": [
+        "No policy SHA pre-spawn binding (G2 deferred).",
+        "No raw group member RSS stream or changed missing-process semantics (G3 deferred).",
+        "Unchanged auditor requires existing executable device/inode/hash and matching current UID; assertions need normal Python.",
+        "Sampled memory stops are not hard caps; group escape, supervisor SIGKILL/host/kernel failures remain outside cleanup assurances.",
+        "Python-peer synthetic barrier only; no Go executable or real Groth16 in G1."
+      ]
+    },
+    {
+      "destination": "tools/bench/tests/__init__.py",
+      "destination_sha256": "32f7f30f7864dfd23b4ea2506a784ace2e5c62718eef3d232e81d8c0c5573b1d",
+      "destination_bytes": 74,
+      "sources": [],
+      "byte_identical": false,
+      "adaptation": "New G1-only package integration/documentation or independent bounded synthetic-test harness; no historical source claimed.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "syntax/package import"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/tests/fixtures/child.py",
+      "destination_sha256": "faaf02ca5f1375a6144ba37dcb1e4d010b99abfb91b7f5f755e346511e44bb59",
+      "destination_bytes": 901,
+      "sources": [
+        {
+          "archive_path": "p4-b1/runner-fix-20261017T013242Z/tests/child.py",
+          "sha256": "faaf02ca5f1375a6144ba37dcb1e4d010b99abfb91b7f5f755e346511e44bb59",
+          "bytes": 901
+        }
+      ],
+      "byte_identical": true,
+      "adaptation": "None; byte-identical copy.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "process_cases: eight runner cases, fixture fork <=one"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/tests/fixtures/peer.py",
+      "destination_sha256": "3aa84a4f7121b5f9ec7ad59dc8fb56af09533a082388f9209b35ba2febbf65a4",
+      "destination_bytes": 994,
+      "sources": [
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/tests/peer_probe.py",
+          "sha256": "3aa84a4f7121b5f9ec7ad59dc8fb56af09533a082388f9209b35ba2febbf65a4",
+          "bytes": 994
+        }
+      ],
+      "byte_identical": true,
+      "adaptation": "None; byte-identical copy.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "process_cases: six barrier cases, fixture fork <=one"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/tests/harness.py",
+      "destination_sha256": "ff3c7c143010e594847d767914d78247986087faec8584a3b7706880e2b8797c",
+      "destination_bytes": 9926,
+      "sources": [],
+      "byte_identical": false,
+      "adaptation": "New G1-only package integration/documentation or independent bounded synthetic-test harness; no historical source claimed.",
+      "test_cases_defined": [],
+      "covered_by": [
+        "all14 process cases under separate subprocess, independent timeout/child-count/headroom monitor and subreaper",
+        "postcase guardian child list + independent final /proc identity checks"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/tests/process_cases.py",
+      "destination_sha256": "762d12116c05bdf57fb5ba69e6dc7db16f21731c8e84f379bb15097a68af35a1",
+      "destination_bytes": 9062,
+      "sources": [
+        {
+          "archive_path": "p4-b1/runner-fix-20261017T013242Z/tests/probe_runner.py",
+          "sha256": "d09c468edadc92fc54dbe6dd389636bb6828477fcb473e17705fed0dd4b3033b",
+          "bytes": 14745
+        },
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/tests/test_controls.py",
+          "sha256": "d8f880a07cc07d997759007efadc7aa225030673c8d1703cff50fb36f58df459",
+          "bytes": 8688
+        },
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/tests/test_target_deadlines.py",
+          "sha256": "a5384b68e6a06646907e8ae70592e866c1385b84fe2319fb1ecf055b04be7a82",
+          "bytes": 2807
+        }
+      ],
+      "byte_identical": false,
+      "adaptation": "Select inherited lifecycle/barrier cases, isolated unittest per case, external outputs, independent /proc checks. Omit unsafe historical teardown/buggy-runner invocation and implicit Go binary dependency.",
+      "test_cases_defined": [
+        "test_runner_success",
+        "test_runner_nonzero",
+        "test_successful_parent_leaves_child",
+        "test_failed_parent_leaves_child",
+        "test_term_resistant_child",
+        "test_timeout",
+        "test_monitor_exception_cleanup",
+        "test_unrelated_negative_control",
+        "test_barrier_short_success",
+        "test_barrier_broken_ipc",
+        "test_barrier_bad_identity",
+        "test_barrier_timeout",
+        "test_barrier_post_release_timeout",
+        "test_barrier_rejects_exec_wrapper"
+      ],
+      "covered_by": [
+        "14 serial isolated unittest cases, each with independent guardian"
+      ],
+      "unresolved_compatibility": []
+    },
+    {
+      "destination": "tools/bench/tests/test_pure.py",
+      "destination_sha256": "14a7ec99a8184552f643af1556d58964558333ea998b0bc2458c743720df2ca5",
+      "destination_bytes": 8693,
+      "sources": [
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/tests/test_audit.py",
+          "sha256": "b270e9ca80b248457d903ba77f0809b28b05e364e99b465f8191a171fa93380e",
+          "bytes": 2116
+        },
+        {
+          "archive_path": "p4-b2/rss-barrier-fix-20261017T112927Z/source/processes.py",
+          "sha256": "148852d2f84c5be3b056e7692487f9795f716197a76f17ee1eb80edfe4ef4230",
+          "bytes": 2445
+        }
+      ],
+      "byte_identical": false,
+      "adaptation": "Retain audit positive/negative intent; fresh synthetic external records and mocked identity parsing; no archive/runtime dependency or process creation.",
+      "test_cases_defined": [
+        "test_source_hashes",
+        "test_imports_have_no_launch_or_archive_read",
+        "test_stat_identity_parser",
+        "test_matching_requires_full_identity",
+        "test_group_matching_and_zombie_exclusion",
+        "test_stale_identity_refuses_signal",
+        "test_readiness_is_not_work_peak",
+        "test_post_peak_recomputed",
+        "test_false_evidence_rejected",
+        "test_missing_and_malformed_records"
+      ],
+      "covered_by": [
+        "10 pure unittest methods; retained external synthetic fixture records"
+      ],
+      "unresolved_compatibility": []
+    }
+  ],
+  "provenance_review": "Headers, imports and source bodies appear project-authored; no identifiable third-party copied/vendored component or restrictive notice found. Lightweight review, not legal certainty. No LICENSE required/added under current user instruction.",
+  "known_limits": [
+    "No policy SHA pre-spawn binding (G2 deferred).",
+    "No raw group member RSS stream or changed missing-process semantics (G3 deferred).",
+    "Unchanged auditor requires existing executable device/inode/hash and matching current UID; assertions need normal Python.",
+    "Sampled memory stops are not hard caps; group escape, supervisor SIGKILL/host/kernel failures remain outside cleanup assurances.",
+    "Python-peer synthetic barrier only; no Go executable or real Groth16 in G1."
+  ],
+  "manifest_self_identity": "This metadata file is newly authored, not promoted; its own hash and all final file hashes are recorded in the external G1 manifest to avoid recursive self-hashing."
+}
