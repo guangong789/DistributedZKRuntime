@@ -1,77 +1,63 @@
-# Current test execution contract
+# 当前测试执行合同
 
-This describes the existing source, not a new test-tier implementation. No build
-tags, test selectors, environment gates or CI jobs were added by this document.
-For architecture see [README](../README.md); for expensive operations and timing
-see [benchmark contracts](benchmark-contracts.md).
+本文描述现有源码的行为，并未实现新的测试分层，也未新增构建标签、测试选择器、环境开关或 CI 作业。
+架构说明见 [README](../README.md)；高开销操作与计时定义见[基准测量合同](benchmark-contracts.md)。
 
-## What ordinary tests execute
+## 常规测试实际执行的内容
 
-With experimental enable flags unset, ordinary package tests and `go test ./...`
-include deterministic state/lifecycle checks **and** real production N=1 Groth16
-Setup/Prove/Verify, localhost gRPC/mTLS, temporary SQLite databases, and controlled
-Unix signal subprocesses. Experimental default checks also Compile/Solve small
-MiMC Chain circuits for N=1,2,8; they do not run experimental Groth16. Signal tests
-skip their Unix-specific checks on Windows.
+未设置实验启用开关时，常规包测试和 `go test ./...` 既包含确定性的状态与生命周期检查，**也包含**真实的生产 N=1 Groth16
+Setup/Prove/Verify、本机 gRPC/mTLS、临时 SQLite 数据库，以及受控的 Unix 信号子进程。
+实验包的默认检查还会对 N=1,2,8 的小型 MiMC Chain 电路执行 Compile/Solve，但不会运行实验 Groth16。
+信号测试在 Windows 上会跳过 Unix 专属检查。
 
-This is not a pure fast-unit-test suite. Tests create ephemeral keys, certificates
-and database fixtures; they do not require deployment keys or private witness
-files from the working directory. Some helpers perform Setup or generate a proof:
-inspect their bodies before changing fixture lifetimes or reusing them in timing.
+这不是一套仅包含快速单元测试的测试集。测试会创建临时密钥、证书和数据库夹具，无需使用工作目录中的部署密钥或私有 witness 文件。
+部分辅助函数会执行 Setup 或生成证明；在改变夹具生命周期或将其用于计时之前，应先检查函数实现。
 
-| Documentation category | Actual selection today |
+| 文档分类 | 当前实际选择方式 |
 |---|---|
-| State/runtime/correctness regressions | Ordinary `Test` selection |
-| Real integration and production cryptography | Also ordinary `Test` selection; not uniformly opt-in |
-| Experimental calibration/correctness/performance | Exact enable flags and selectors below |
-| Historical experiments | External archives; not ordinary test entry points |
+| 状态、运行时与正确性回归 | 常规 `Test` 选择 |
+| 真实集成与生产密码学 | 同样通过常规 `Test` 选择；尚未统一改为显式启用 |
+| 实验校准、正确性与性能 | 使用下文列出的精确启用开关和选择器 |
+| 历史实验 | 保存在外部归档中；不是常规测试入口 |
 
-Benchmarks need an explicit `-bench` selection. Avoid `-bench .`: several entries
-perform real proving, and ordinary Go benchmark calibration may repeat fixtures
-and expensive operations. Go test commands can also write caches; `-mod=readonly`
-prevents module-file changes, not all filesystem activity.
+基准测试需要显式使用 `-bench` 选择。避免使用 `-bench .`：多个入口会执行真实证明，而 Go 的常规基准校准可能反复运行夹具和高开销操作。
+Go 测试命令也可能写入缓存；`-mod=readonly` 只禁止修改模块文件，并不禁止所有文件系统活动。
 
-## Protected regression contracts
+## 必须保留的回归合同
 
-The following files are examples of required protection, not deletion candidates.
-Tests with similar fixtures often protect different execution boundaries.
+以下文件是必须保护的测试示例，不是待删除清单。使用相似夹具的测试往往保护不同的执行边界。
 
-| Contract | Representative source |
+| 合同 | 代表性源码 |
 |---|---|
-| P0: exhausted normal submission persists `Failed` only for its exact published generation; no-worker/no-attempt does not rewrite old state; storage errors remain errors | [submit_failure_test.go](../cmd/coordinator/submit_failure_test.go) |
-| Ownership, concurrent AttemptID allocation, `max(memory, store)+1`, matching leases and retry limits | [attempts_test.go](../cmd/coordinator/attempts_test.go), [submit_test.go](../cmd/coordinator/submit_test.go) |
-| Terminal persistence before response, full task specification and SQLite reopen | [terminal_persistence_test.go](../cmd/coordinator/terminal_persistence_test.go), [sqlite_store_test.go](../cmd/coordinator/sqlite_store_test.go) |
-| Restart recovery, failed-session repair, cooldown and generation/spec reconciliation | [recovery_failure_test.go](../cmd/coordinator/recovery_failure_test.go), [recovery_schedule_test.go](../cmd/coordinator/recovery_schedule_test.go), [ZK restart integration](../cmd/coordinator/zk_preimage_recovery_integration_test.go) |
-| Task `Cancelled` vs RPC errors vs parent cancellation; cancellation persistence and no retry after parent cancellation | [submit_cancellation_test.go](../cmd/coordinator/submit_cancellation_test.go), [Coordinator timeout tests](../cmd/coordinator/timeout_test.go) |
-| P2: valid positive TimeoutMs bounds and strict result deadline, including after Prove; client job/RPC deadlines remain separate from lease | [runtime timeout tests](../internal/runtime/timeout_test.go), [Worker timeout tests](../cmd/worker/timeout_test.go), [Client budgets](../cmd/client/execution_test.go) |
-| Lease expiry cancels only the child attempt; late/stale results and Verify crossing a deadline cannot commit | [result_acceptance_test.go](../cmd/coordinator/result_acceptance_test.go), [proving_transport_test.go](../cmd/coordinator/proving_transport_test.go) |
-| Bounded proving admission, `ResourceExhausted`, and retaining the slot until actual Prove returns after cancellation | [runtime admission](../internal/runtime/zk_preimage_admission_test.go), [Worker admission](../cmd/worker/proving_admission_test.go), [Coordinator admission](../cmd/coordinator/proving_admission_test.go) |
-| P1-A: Coordinator drains admission, joins handlers/dispatch/recovery before store close, and observes a shared shutdown budget | [Coordinator shutdown](../cmd/coordinator/shutdown_test.go), [Coordinator signal wiring](../cmd/coordinator/shutdown_signal_test.go) |
-| P1-B: Worker cancels/joins execution and background clients, preserves proof ownership and closes the original listener | [Worker shutdown](../cmd/worker/shutdown_test.go), [background shutdown](../cmd/worker/shutdown_background_test.go), [Worker signal wiring](../cmd/worker/shutdown_signal_test.go) |
-| Executor state transitions, duplicate admission, graceful/forced shutdown and blocked submit/result paths | [executor_test.go](../internal/runtime/executor_test.go), [job_test.go](../internal/runtime/job_test.go) |
-| mTLS chain/EKU/IP/URI identity, exact method roles and WorkerID binding at all production RPC boundaries | [rpcauth tests](../internal/rpcauth), [Coordinator transport](../cmd/coordinator/transport_test.go), [Worker execution transport](../cmd/worker/execution_transport_test.go), [Client transport](../cmd/client/transport_test.go) |
-| Strict public payload, legacy record safety, private/public witness separation and real proof acceptance/rejection | [payload parser](../internal/zk/preimage_payload_test.go), [recovery payloads](../cmd/coordinator/zk_payload_recovery_test.go), [real preimage proof](../internal/zk/preimage_test.go), [end-to-end witness flow](../cmd/coordinator/zk_preimage_integration_test.go) |
-| Metrics reflect persisted transitions, bounded labels and actual proving/verification; fixtures do not imply stronger production coverage | [metrics integration](../cmd/coordinator/metrics_integration_test.go), [metrics backend](../internal/metrics/prometheus/metrics_test.go) |
+| P0：普通提交耗尽重试后，只能将本次已发布的精确代次持久化为 `Failed`；无 Worker 或未创建尝试时不得改写旧状态；存储错误仍须作为错误返回 | [submit_failure_test.go](../cmd/coordinator/submit_failure_test.go) |
+| 所有权、并发 AttemptID 分配、`max(memory, store)+1`、匹配的 lease 与重试上限 | [attempts_test.go](../cmd/coordinator/attempts_test.go), [submit_test.go](../cmd/coordinator/submit_test.go) |
+| 响应前持久化终态、完整任务规格与 SQLite 重新打开 | [terminal_persistence_test.go](../cmd/coordinator/terminal_persistence_test.go), [sqlite_store_test.go](../cmd/coordinator/sqlite_store_test.go) |
+| 重启恢复、失败执行会话的修复、冷却期与代次/规格核对 | [recovery_failure_test.go](../cmd/coordinator/recovery_failure_test.go), [recovery_schedule_test.go](../cmd/coordinator/recovery_schedule_test.go), [ZK 重启集成](../cmd/coordinator/zk_preimage_recovery_integration_test.go) |
+| 区分任务 `Cancelled`、RPC 错误与父上下文取消；持久化取消状态，父上下文取消后不再重试 | [submit_cancellation_test.go](../cmd/coordinator/submit_cancellation_test.go), [Coordinator 超时测试](../cmd/coordinator/timeout_test.go) |
+| P2：TimeoutMs 的有效正值边界与严格结果截止时间，包括 Prove 之后的检查；Client 任务/RPC 截止时间仍独立于 lease | [运行时超时测试](../internal/runtime/timeout_test.go), [Worker 超时测试](../cmd/worker/timeout_test.go), [Client 时间预算](../cmd/client/execution_test.go) |
+| lease 到期只取消子尝试；迟到或过期的结果，以及 Verify 跨越截止时间的结果，都不得提交 | [result_acceptance_test.go](../cmd/coordinator/result_acceptance_test.go), [proving_transport_test.go](../cmd/coordinator/proving_transport_test.go) |
+| 有界证明准入、`ResourceExhausted`，以及取消后仍保留名额直到 Prove 实际返回 | [运行时准入](../internal/runtime/zk_preimage_admission_test.go), [Worker 准入](../cmd/worker/proving_admission_test.go), [Coordinator 准入](../cmd/coordinator/proving_admission_test.go) |
+| P1-A：Coordinator 停止接收新工作，在关闭存储前等待 handler、dispatch 和 recovery 退出，并遵守共享关闭预算 | [Coordinator 关闭](../cmd/coordinator/shutdown_test.go), [Coordinator 信号接入](../cmd/coordinator/shutdown_signal_test.go) |
+| P1-B：Worker 取消并等待执行与后台客户端退出，保留证明计算的所有权，并关闭原始 listener | [Worker 关闭](../cmd/worker/shutdown_test.go), [后台关闭](../cmd/worker/shutdown_background_test.go), [Worker 信号接入](../cmd/worker/shutdown_signal_test.go) |
+| Executor 状态转换、重复准入、优雅/强制关闭，以及阻塞的提交/结果路径 | [executor_test.go](../internal/runtime/executor_test.go), [job_test.go](../internal/runtime/job_test.go) |
+| 所有生产 RPC 边界上的 mTLS 证书链/EKU/IP/URI 身份、精确的方法角色与 WorkerID 绑定 | [rpcauth 测试](../internal/rpcauth), [Coordinator 传输](../cmd/coordinator/transport_test.go), [Worker 执行传输](../cmd/worker/execution_transport_test.go), [Client 传输](../cmd/client/transport_test.go) |
+| 严格公开载荷、旧记录安全、私有/公开 witness 分离，以及真实证明的接受与拒绝 | [载荷解析器](../internal/zk/preimage_payload_test.go), [恢复载荷](../cmd/coordinator/zk_payload_recovery_test.go), [真实原像证明](../internal/zk/preimage_test.go), [端到端 witness 流程](../cmd/coordinator/zk_preimage_integration_test.go) |
+| 指标反映已持久化的状态转换、有界标签与实际证明/验证；测试夹具不能被视为覆盖了更多生产路径 | [指标集成](../cmd/coordinator/metrics_integration_test.go), [指标后端](../internal/metrics/prometheus/metrics_test.go) |
 
-`TestWorkerShutdownListenerClosureObservation` checks the **original listener's**
-`Accept()` error with `errors.Is(err, net.ErrClosed)`. Its open-listener negative
-control must fail observation even when subsequent cleanup closes that listener.
-A failed connection to the old port, or a Serve return alone, is not equivalent.
+`TestWorkerShutdownListenerClosureObservation` 用 `errors.Is(err, net.ErrClosed)` 检查**原始 listener** 的 `Accept()` 错误。
+保持 listener 打开的负对照必须判定观测失败，即使后续清理关闭了该 listener。
+仅凭旧端口连接失败，或 Serve 已返回，都不能得出等价结论。
 
-Current retry semantics distinguish a valid task `Failed`/`Cancelled` response
-(terminal) from an RPC `Canceled`/`DeadlineExceeded` while the parent is still live
-(infrastructure failure, eligible for the existing retry path). Fencing protects
-result acceptance, not exactly-once remote execution. Controlled reopen tests do
-not establish power-loss durability or replicated-Coordinator correctness.
+当前重试语义区分有效任务 `Failed`/`Cancelled` 响应（终态）与父上下文仍有效时的 RPC `Canceled`/`DeadlineExceeded`
+（基础设施故障，可进入既有重试路径）。Fencing 保护结果接受，不保证远端恰好执行一次。
+受控的关闭/重新打开测试不能证明断电耐久性或多副本 Coordinator 的正确性。
 
-## Ordinary commands: deliberate execution only
+## 常规命令：仅在明确选择后执行
 
-The commands below are templates, not checks performed by this documentation
-change. Use a machine with the declared Go toolchain, cached dependencies and
-permission for local sockets, temporary files and child processes. In an offline
-environment, missing cached dependencies should fail rather than download.
+以下命令是模板，并非本次文档变更已执行的检查。运行环境应具备声明的 Go 工具链、已缓存的依赖，
+并允许本地 socket、临时文件和子进程。在离线环境中，缺少缓存依赖时应失败，而不是下载依赖。
 
-First sanitize the current shell for ordinary regression selection:
+先清理当前 shell 的相关变量，确保选择常规回归：
 
 ```sh
 unset DZKR_MIMCCHAIN_CALIBRATE DZKR_MIMCCHAIN_GROTH16
@@ -82,8 +68,7 @@ unset DZKR_TEST_WORKER_CHILD DZKR_TEST_WORKER_ARGS
 export GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off
 ```
 
-From the repository root, choose the intended scope; do not run every line by
-habit. The package/repository commands include the real work described above.
+在仓库根目录选择所需范围，不要习惯性地逐行执行。包级和仓库级命令包含上文说明的真实工作。
 
 ```sh
 # Small focused state regression.
@@ -102,81 +87,61 @@ go test -race -mod=readonly -count=1 -timeout=2m -run '^TestProvingLimiter' ./in
 go vet -mod=readonly ./...
 ```
 
-The `-timeout` values bound test processes, not production job/RPC/lease durations
-or total multi-package wall time. They are not hard memory limits. Inspect failures
-before rerunning; do not classify an unexplained failure as harmless because a
-later run passes. The explicit development PKI checks in
-[test_bootstrap.py](../scripts/dev-pki/test_bootstrap.py) are separate from Go test
-selection and invoke OpenSSL and Go; they are not temporary ECS diagnostics.
+`-timeout` 限制的是测试进程，不是生产任务/RPC/lease 时长，也不是多个包的总墙钟时间；它不构成硬内存限制。
+重跑前应先检查失败原因，不得仅因后续运行通过，就将无法解释的失败判为无害。
+[test_bootstrap.py](../scripts/dev-pki/test_bootstrap.py) 中的显式开发 PKI 检查独立于 Go 测试选择，
+会调用 OpenSSL 和 Go；它们不是临时 ECS 诊断代码。
 
-## Experimental opt-in gates
+<a id="experimental-opt-in-gates"></a>
 
-**Expensive/synthetic experiment metadata, not casual launch instructions.**
-The package is `./internal/zk/experimental/mimcchain`. Use exact selectors and a
-reviewed, bounded supervisor with fresh external evidence. No environment flag
-itself supplies supervision. Do not run archived launch scripts in place: they
-can contain fixed paths and write into their historical evidence directory.
+## 实验显式启用门槛
 
-| Entry / exact `-run` value | Enable flag | Additional source requirements / behavior |
+**以下是高开销实验与合成实验的元数据，不是可随意执行的启动指令。**
+包路径为 `./internal/zk/experimental/mimcchain`。必须使用精确选择器、经过评审且有界的 supervisor，以及新的外部证据目录。
+环境开关本身不提供监督机制。不要在原位置运行归档启动脚本：它们可能包含固定路径，并向历史证据目录写入数据。
+
+| 入口 / 精确 `-run` 值 | 启用开关 | 额外源码要求 / 行为 |
 |---|---|---|
-| `TestCompileCalibration` / `^TestCompileCalibration$` | `DZKR_MIMCCHAIN_CALIBRATE=1` | Compiles N=1,2,8,32 once each; no Setup/Solve/Prove. Includes N=32, so it is not an implicit authorization to scale an experiment. |
-| `TestGroth16N2` / `^TestGroth16N2$` | `DZKR_MIMCCHAIN_GROTH16=1` | Real N=2 correctness, two setup pairs, one proof and positive/negative verification. Not the CPU pilot budget. |
-| `TestMiMCChainCPUPilot` / `^TestMiMCChainCPUPilot$/^N2$` | `DZKR_MIMCCHAIN_CPU_PILOT=1` | Requires `DZKR_MIMCCHAIN_CPU_N=2`, `-benchtime=1x`, effective GOMAXPROCS=4, and evidence/run/source identity below. |
-| `TestMiMCChainCPUPilot` / `^TestMiMCChainCPUPilot$/^N8$` | `DZKR_MIMCCHAIN_CPU_PILOT=1` | Requires `DZKR_MIMCCHAIN_CPU_N=8`, `-benchtime=1x`, effective GOMAXPROCS=4, and the frozen schema-2 `mimcchain-n8-groth16-v1` profile through the D2 Collector. Metadata only; a future run requires separate authorization. |
-| `TestMiMCChainCPUArtifactAudit` / `^TestMiMCChainCPUArtifactAudit$` | `DZKR_MIMCCHAIN_CPU_AUDIT=1` | Separate process using the pilot's existing matching artifact directory and run/source identity; creates new audit files exclusively; one Verify, no Setup/Prove. |
-| `TestMiMCChainStartBarrierProbe` / `^TestMiMCChainStartBarrierProbe$` | `DZKR_MIMCCHAIN_BARRIER_PROBE=1` | Synthetic, no crypto. `DZKR_MIMCCHAIN_BARRIER_PROBE_MODE`: empty/default returns, `trivial` checks tiny work, `nonzero` fails after release, `preexit` fails before handshake, `hold` waits indefinitely and requires external termination. |
+| `TestCompileCalibration` / `^TestCompileCalibration$` | `DZKR_MIMCCHAIN_CALIBRATE=1` | 对 N=1,2,8,32 各编译一次；不执行 Setup/Solve/Prove。由于包含 N=32，这不构成扩大实验规模的隐式授权。 |
+| `TestGroth16N2` / `^TestGroth16N2$` | `DZKR_MIMCCHAIN_GROTH16=1` | 真实 N=2 正确性测试，使用两组 setup 密钥对、一个证明及正/负验证；这不是 CPU pilot 的操作预算。 |
+| `TestMiMCChainCPUPilot` / `^TestMiMCChainCPUPilot$/^N2$` | `DZKR_MIMCCHAIN_CPU_PILOT=1` | 要求 `DZKR_MIMCCHAIN_CPU_N=2`、`-benchtime=1x`、实际生效的 GOMAXPROCS=4，以及下述证据/运行/源码身份。 |
+| `TestMiMCChainCPUPilot` / `^TestMiMCChainCPUPilot$/^N8$` | `DZKR_MIMCCHAIN_CPU_PILOT=1` | 要求 `DZKR_MIMCCHAIN_CPU_N=8`、`-benchtime=1x`、实际生效的 GOMAXPROCS=4，并通过 D2 Collector 使用冻结的 schema-2 `mimcchain-n8-groth16-v1` profile。此处仅为元数据；后续运行需要单独授权。 |
+| `TestMiMCChainCPUArtifactAudit` / `^TestMiMCChainCPUArtifactAudit$` | `DZKR_MIMCCHAIN_CPU_AUDIT=1` | 独立进程使用 pilot 已有且匹配的产物目录与运行/源码身份；以排他创建方式生成新的审计文件；执行一次 Verify，不执行 Setup/Prove。 |
+| `TestMiMCChainStartBarrierProbe` / `^TestMiMCChainStartBarrierProbe$` | `DZKR_MIMCCHAIN_BARRIER_PROBE=1` | 合成探针，不执行密码学操作。`DZKR_MIMCCHAIN_BARRIER_PROBE_MODE`：空值/默认模式直接返回，`trivial` 检查微小工作，`nonzero` 在放行后失败，`preexit` 在握手前失败，`hold` 无限等待且需要外部终止。 |
 
-One real N=8 pilot has been independently accepted; its original run and audit
-remain external historical evidence. This does not enable another run. The N=8
-path requires the accepted D2 Collector, fresh configuration/source/binary/policy
-bindings and resource preflight; a bare Go selector is not a safe launch recipe.
-The separate `TestMiMCChainCPUArtifactAudit` remains **N=2-only**. Python G4/N=8
-evidence checking reconciles the recorded Go calls; it does not redo Groth16
-Verify. See [the accepted N=8 contract](benchmark-contracts.md#accepted-n8-cpu-pilot).
+一次真实 N=8 pilot 已通过独立验收；原始运行与审计仍保存在外部，作为历史证据。这并不授权再次运行。
+N=8 路径要求使用已验收的 D2 Collector、新的配置/源码/二进制/策略绑定，以及资源预检；单独的 Go 选择器不是安全的启动方案。
+独立的 `TestMiMCChainCPUArtifactAudit` 仍**仅适用于 N=2**。Python G4/N=8 证据检查核对已记录的 Go 调用，不重新执行 Groth16 Verify。
+参见[已验收的 N=8 合同](benchmark-contracts.md#accepted-n8-cpu-pilot)。
 
-For the pilot and the N=2 artifact audit:
+pilot 与 N=2 产物审计的要求：
 
-- `DZKR_MIMCCHAIN_EVIDENCE_DIR`: absolute, outside the repository. The pilot leaf
-  must not exist; the audit must use its matching existing leaf with no prior
-  audit outputs. Both use exclusive creation; never point them at sealed history.
-- `DZKR_MIMCCHAIN_RUN_ID`: pilot requires a nonempty value without `/` or `\`;
-  the audit must match the stored run ID.
-- `DZKR_MIMCCHAIN_SOURCE_ID`: pilot requires 64 hexadecimal characters; the audit
-  must match the fixture. The historical launcher supplied the preflight manifest
-  SHA256. This is a caller-supplied source binding, not automatic Git discovery.
+- `DZKR_MIMCCHAIN_EVIDENCE_DIR`：必须是仓库外的绝对路径。pilot 的末级目录必须尚不存在；审计必须使用与其匹配的已有末级目录，且其中不能已有审计输出。两者都采用排他创建；绝不可指向已封存的历史记录。
+- `DZKR_MIMCCHAIN_RUN_ID`：pilot 要求非空，且不能包含 `/` 或 `\`；审计必须与已存储的 run ID 一致。
+- `DZKR_MIMCCHAIN_SOURCE_ID`：pilot 要求 64 个十六进制字符；审计必须与夹具一致。历史 launcher 使用预检清单的 SHA256。这是调用者提供的源码绑定，不是自动发现 Git 状态。
 
-For the supervised barrier contract, the supervisor sets
-`DZKR_MIMCCHAIN_START_BARRIER=1`, `DZKR_MIMCCHAIN_BARRIER_SOCKET` to its private Unix
-socket and `DZKR_MIMCCHAIN_BARRIER_TOKEN` to its generated 64-character token.
-`DZKR_MIMCCHAIN_BARRIER_TIMEOUT` defaults to `5s`; a supplied duration must be
-positive and at most `30s`. Pilot, audit and probe call this hook before fixture
-work/timing. The Go hook is a no-op when START_BARRIER is unset: this does **not**
-make an unsupervised pilot an acceptable measurement. Calibration and
-`TestGroth16N2` do not call this barrier hook.
+在受监督的 barrier 合同中，supervisor 设置 `DZKR_MIMCCHAIN_START_BARRIER=1`，
+将 `DZKR_MIMCCHAIN_BARRIER_SOCKET` 指向其私有 Unix socket，并将 `DZKR_MIMCCHAIN_BARRIER_TOKEN` 设为生成的 64 字符 token。
+`DZKR_MIMCCHAIN_BARRIER_TIMEOUT` 默认为 `5s`；显式提供的时长必须为正且不超过 `30s`。
+pilot、audit 和 probe 都在夹具工作/计时之前调用该 hook。未设置 START_BARRIER 时，Go hook 不执行任何操作；
+这**不意味着**无监督的 pilot 可以作为合格测量。校准与 `TestGroth16N2` 不调用此 barrier hook。
 
-The accepted pilot/audit supervisor clears all five experimental enable flags,
-then enables only the selected role. It sets `GOTOOLCHAIN=local`, `GOPROXY=off`,
-`GOSUMDB=off`, `GOMAXPROCS=4` and `PYTHONDONTWRITEBYTECODE=1`; the historical launcher
-also set `GOGC=100` and left `GOMEMLIMIT` unset. Its target used `-test.count=1`,
-`-test.cpu=4`, `-test.benchtime=1x`, `-test.timeout=3m` in a prebuilt Go test binary.
-The audit does not independently enforce CPU_N, GOMAXPROCS or benchtime in its Go
-guard; those settings belong to the accepted supervised execution contract.
-See [historical pilot and resource semantics](benchmark-contracts.md#p4-b2-n2-cpu-pilot).
+已验收的 pilot/audit supervisor 会清除全部五个实验启用开关，然后只启用选定角色。
+它设置 `GOTOOLCHAIN=local`、`GOPROXY=off`、`GOSUMDB=off`、`GOMAXPROCS=4` 和 `PYTHONDONTWRITEBYTECODE=1`；
+历史 launcher 还设置了 `GOGC=100`，并保持 `GOMEMLIMIT` 未设置。
+其目标使用预先构建的 Go 测试二进制，参数为 `-test.count=1`、`-test.cpu=4`、`-test.benchtime=1x`、`-test.timeout=3m`。
+audit 的 Go 守卫不会独立强制检查 CPU_N、GOMAXPROCS 或 benchtime；这些设置属于已验收的受监督执行合同。
+参见[历史 pilot 与资源语义](benchmark-contracts.md#p4-b2-n2-cpu-pilot)。
 
-## Signal subprocess variables are not opt-in flags
+## 信号子进程变量不是可选启用开关
 
-`TestCoordinatorSignalSubprocess` uses `DZKR_TEST_COORDINATOR_CHILD` and
-`DZKR_TEST_COORDINATOR_ARGS`; `TestWorkerSignalSubprocess` uses
-`DZKR_TEST_WORKER_CHILD` and `DZKR_TEST_WORKER_ARGS`. The parent test launches its
-current test executable with encoded startup arguments; the child takes the real
-main/signal path. Unsetting these variables does **not** skip the parent test.
-Do not set child variables manually in an ordinary test shell.
+`TestCoordinatorSignalSubprocess` 使用 `DZKR_TEST_COORDINATOR_CHILD` 和 `DZKR_TEST_COORDINATOR_ARGS`；
+`TestWorkerSignalSubprocess` 使用 `DZKR_TEST_WORKER_CHILD` 和 `DZKR_TEST_WORKER_ARGS`。
+父测试使用编码后的启动参数，启动当前测试可执行文件；子进程走真实的 main/信号路径。
+取消设置这些变量**不会**跳过父测试。不要在常规测试 shell 中手动设置子进程变量。
 
-## Proposed next phases, not implemented
+## 后续阶段提案：尚未实现
 
-A fast default tier plus explicitly selected mandatory integration/real-crypto
-checks is a proposal, not today's selection behavior. Moving/gating tests would
-need separate authorization and replacement execution coverage. Likewise, narrow
-Setup/Load/Prove/Verify helpers may reduce repetition later; no fixture, assertion,
-test or benchmark boundary was changed here. Preserve independent native digest
-oracles and original-listener shutdown controls during any future consolidation.
+默认快速测试层加上显式选择的必跑集成/真实密码学检查，只是提案，不是当前的选择行为。
+移动测试或添加门控需要单独授权，并补足替代执行覆盖。同样，职责单一的 Setup/Load/Prove/Verify 辅助函数以后或可减少重复；
+本文未改变任何夹具、断言、测试或基准边界。未来整合时，应保留独立的原生 digest 参照计算与针对原始 listener 的关闭检查。
