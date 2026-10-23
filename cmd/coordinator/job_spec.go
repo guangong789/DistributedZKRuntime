@@ -16,6 +16,13 @@ type JobSpec struct {
 	TimeoutMs int64
 }
 
+func (s *CoordinatorServer) checkZKAvailable(taskType string) error {
+	if s.zkDisabled && taskType == "zk_preimage_prove" {
+		return status.Error(codes.FailedPrecondition, "ZK tasks are disabled")
+	}
+	return nil
+}
+
 func jobSpecFromRequest(req *runtimepb.SubmitJobRequest) JobSpec {
 	return JobSpec{
 		JobID:     req.JobId,

@@ -18,6 +18,7 @@ const defaultAttemptLease = 5 * time.Second
 const defaultShutdownTimeout = 30 * time.Second
 
 type coordinatorExecutionConfig struct {
+	DisableZK       bool
 	ListenAddress   string
 	AttemptLease    time.Duration
 	ShutdownTimeout time.Duration
@@ -25,6 +26,7 @@ type coordinatorExecutionConfig struct {
 
 func coordinatorExecutionFlags(fs *flag.FlagSet) *coordinatorExecutionConfig {
 	c := &coordinatorExecutionConfig{}
+	fs.BoolVar(&c.DisableZK, "disable-zk", false, "disable preimage tasks and ZK material loading; requires homogeneous Worker configuration")
 	fs.StringVar(&c.ListenAddress, "listen", ":50050", "coordinator TCP listen address")
 	fs.DurationVar(&c.AttemptLease, "attempt-lease", defaultAttemptLease, "positive per-attempt lease duration")
 	fs.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", defaultShutdownTimeout, "positive total shutdown budget; expiration forces process exit")

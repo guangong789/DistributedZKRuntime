@@ -32,6 +32,8 @@ type WorkerService struct {
 
 	preimageProver *zk.PreimageProver
 	witnessStore   runtime.WitnessStore
+	// Immutable after startup; the zero value retains ZK-enabled behavior.
+	zkDisabled bool
 	// Configure one shared limiter before serving ZK requests.
 	provingLimiter *runtime.ProvingLimiter
 	// Configure before serving; implementations must support concurrent calls.
@@ -95,6 +97,12 @@ func (s *WorkerService) ExecuteJob(
 	timeout, err := runtime.TaskTimeoutFromMilliseconds(req.TimeoutMs)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if s.zkDisabled && req.TaskType == "zk_preimage_prove" {
+		return &runtimepb.ExecuteJobResponse{
+			JobId: req.JobId, AttemptId: req.AttemptId, Status: "Failed",
+			Error: "ZK tasks are disabled",
+		}, nil
 	}
 	task, err := buildTask(
 		req.TaskType,
@@ -281,11 +289,13 @@ func main() {
 	metricsAddress := flag.String("metrics-listen", "127.0.0.1:9091", "metrics HTTP listen address (required; loopback by default)")
 	maxConcurrentProofs := flag.Int("max-concurrent-proofs", 1, "maximum simultaneous preimage proving calls (positive)")
 	shutdownTimeout := workerShutdownFlag(flag.CommandLine)
+	disableZK := workerDisableZKFlag(flag.CommandLine)
 	security := workerSecurityFlags(flag.CommandLine)
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := workerConfig{ID: *workerID, ListenAddress: *listenAddress, AdvertiseAddress: *advertiseAddress,
+		DisableZK:          *disableZK,
 		CoordinatorAddress: *coordinatorAddress, ProvingKeyPath: *provingKeyPath, WitnessFilePath: *witnessFilePath,
 		MetricsAddress: *metricsAddress, MaxConcurrentProofs: *maxConcurrentProofs, ShutdownTimeout: *shutdownTimeout, Security: *security}
 	if err := runWorker(ctx, cfg); err != nil {
@@ -299,7 +309,12 @@ func workerShutdownFlag(fs *flag.FlagSet) *time.Duration {
 	return fs.Duration("shutdown-timeout", defaultWorkerShutdownTimeout, "positive total shutdown budget, independent of task deadlines; expiration forces process exit")
 }
 
+func workerDisableZKFlag(fs *flag.FlagSet) *bool {
+	return fs.Bool("disable-zk", false, "disable preimage tasks and ZK material loading; requires homogeneous Coordinator configuration")
+}
+
 type workerConfig struct {
+	DisableZK                                               bool
 	ID, ListenAddress, AdvertiseAddress, CoordinatorAddress string
 	ProvingKeyPath, WitnessFilePath, MetricsAddress         string
 	MaxConcurrentProofs                                     int
@@ -367,16 +382,20 @@ func initializeWorker(p *workerProcess, cfg workerConfig, publish func()) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	prover, err := zk.LoadPreimageProver(cfg.ProvingKeyPath)
-	if err != nil {
-		return fmt.Errorf("load preimage prover: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	witnesses, err := runtime.LoadMemoryWitnessStore(cfg.WitnessFilePath)
-	if err != nil {
-		return fmt.Errorf("load witness store: %w", err)
+	var prover *zk.PreimageProver
+	var witnesses runtime.WitnessStore
+	if !cfg.DisableZK {
+		prover, err = zk.LoadPreimageProver(cfg.ProvingKeyPath)
+		if err != nil {
+			return fmt.Errorf("load preimage prover: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		witnesses, err = runtime.LoadMemoryWitnessStore(cfg.WitnessFilePath)
+		if err != nil {
+			return fmt.Errorf("load witness store: %w", err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -386,7 +405,7 @@ func initializeWorker(p *workerProcess, cfg workerConfig, publish func()) error 
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
 	}
-	service := &WorkerService{preimageProver: prover, witnessStore: witnesses, provingLimiter: limiter, metrics: observer}
+	service := &WorkerService{preimageProver: prover, witnessStore: witnesses, zkDisabled: cfg.DisableZK, provingLimiter: limiter, metrics: observer}
 	metricsServer, err := prommetrics.StartHTTP(cfg.MetricsAddress, registry)
 	if err != nil {
 		return fmt.Errorf("start metrics HTTP server: %w", err)

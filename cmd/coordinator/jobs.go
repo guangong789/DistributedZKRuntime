@@ -156,6 +156,27 @@ func (s *CoordinatorServer) persistSubmitFailure(ctx context.Context, jobID, ini
 	return true, nil
 }
 
+// Called after store initialization, before any startup recovery writes or producers.
+// Inspect both states even after finding a match; never parse legacy payloads.
+func (s *CoordinatorServer) checkDisabledZKRecovery() error {
+	unfinished := false
+	for _, state := range []JobState{JobRunning, JobRecovering} {
+		records, err := s.jobStore.ListByState(state)
+		if err != nil {
+			return fmt.Errorf("check unfinished ZK jobs: %w", err)
+		}
+		for _, record := range records {
+			if record.TaskType == "zk_preimage_prove" {
+				unfinished = true
+			}
+		}
+	}
+	if unfinished {
+		return errors.New("ZK is disabled but unfinished ZK jobs exist; restart with ZK enabled")
+	}
+	return nil
+}
+
 func (s *CoordinatorServer) recoverRunningJobs() error {
 	observer := metrics.Resolve(s.metrics)
 	if s.jobStore == nil {

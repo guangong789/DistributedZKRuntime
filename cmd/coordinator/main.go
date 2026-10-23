@@ -50,6 +50,8 @@ type CoordinatorServer struct {
 	recoveryReady chan struct{}
 
 	preimageVerifier PreimageProofVerifier
+	// Immutable after startup; the zero value retains ZK-enabled behavior.
+	zkDisabled bool
 	// Configure before serving; implementations must support concurrent calls.
 	metrics metrics.Metrics
 	// Configure before serving. Nil fails closed; isolated tests may explicitly
@@ -62,6 +64,9 @@ func (s *CoordinatorServer) SubmitJob(
 	req *runtimepb.SubmitJobRequest,
 ) (*runtimepb.SubmitJobResponse, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.checkZKAvailable(req.TaskType); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +132,8 @@ func runCoordinator(ctx context.Context, execution coordinatorExecutionConfig, s
 		return fmt.Errorf("coordinator mTLS configuration: %w", err)
 	}
 	coordinator := &CoordinatorServer{
-		workers: make(map[string]WorkerInfo), jobAttempts: make(map[int64]int64),
+		zkDisabled: execution.DisableZK,
+		workers:    make(map[string]WorkerInfo), jobAttempts: make(map[int64]int64),
 		leases: make(map[int64]JobLease), activeJobs: make(map[int64]struct{}),
 		leaseDuration: execution.AttemptLease, recoveryReady: make(chan struct{}, 1),
 		workerCredentials: transport.workerCredentials,
@@ -180,11 +186,17 @@ func initializeCoordinator(process *coordinatorProcess, execution coordinatorExe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	preimageVerifier, err := zk.LoadPreimageVerifier(verifyingKeyPath)
-	if err != nil {
-		return fmt.Errorf("load preimage verifier: %w", err)
+	if coordinator.zkDisabled {
+		if err := coordinator.checkDisabledZKRecovery(); err != nil {
+			return err
+		}
+	} else {
+		preimageVerifier, err := zk.LoadPreimageVerifier(verifyingKeyPath)
+		if err != nil {
+			return fmt.Errorf("load preimage verifier: %w", err)
+		}
+		coordinator.preimageVerifier = preimageVerifier
 	}
-	coordinator.preimageVerifier = preimageVerifier
 	if err := ctx.Err(); err != nil {
 		return err
 	}

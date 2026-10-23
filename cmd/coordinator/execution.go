@@ -119,6 +119,9 @@ func (s *CoordinatorServer) executeJobFromSource(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := s.checkZKAvailable(spec.TaskType); err != nil {
+		return nil, err
+	}
 	var err error
 	spec, err = validateJobSpec(spec)
 	if err != nil {
