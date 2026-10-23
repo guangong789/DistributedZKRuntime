@@ -4,11 +4,26 @@
 
 ## 项目简介
 
-DistributedZKRuntime 是一个用 Go 实现的分布式任务运行时，采用单 Coordinator、多 Worker 模型，通过 gRPC/mTLS 通信，并使用 SQLite 保存任务状态。它以 BN254 上的 MiMC 原像 Groth16 证明为工作负载：Worker 生成证明，Coordinator 独立验证计算结果。
+DistributedZKRuntime 是一个用 Go 实现的分布式任务运行时，采用单 Coordinator、多 Worker 模型，通过 gRPC/mTLS 通信，并使用 SQLite 持久化任务状态与完整任务规格。运行时管理任务尝试、重试、lease、过期结果 fencing、取消与重启恢复。BN254 上的 MiMC 原像 Groth16 证明是其中的专用工作负载：Worker 生成证明，Coordinator 独立验证计算结果。
 
 项目关注远端计算中的结果接受问题：请求超时、Worker 故障或 Coordinator 重启之后，系统如何区分仍然有效的结果与已经过期的尝试？下面的六个设计取舍解释了证明验证、任务身份和资源生命周期如何共同回答这个问题。
 
 ## 架构概览
+
+```mermaid
+flowchart LR
+    client["Client"] -->|"gRPC / mTLS"| coordinator["Coordinator"]
+    coordinator <-->|"gRPC / mTLS"| workers["Workers"]
+    coordinator <--> sqlite["SQLite"]
+    classDef clientRole fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef coordinatorRole fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef workerRole fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef storageRole fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    class client clientRole
+    class coordinator coordinatorRole
+    class workers workerRole
+    class sqlite storageRole
+```
 
 Client 同步向 Coordinator 提交任务，Coordinator 对存活的 Worker 进行轮询调度，并管理执行尝试和任务状态。Worker 执行任务并返回结果；对于 ZK 成功结果，Coordinator 独立验证证明，并在将终态持久化到 SQLite 后向 Client 返回响应。SQLite 保存的任务状态也为重启恢复提供依据。
 
@@ -72,13 +87,23 @@ Worker 共享的 [ProvingLimiter](internal/runtime/proving_limiter.go) 因而将
 
 ## 快速开始
 
-使用 [go.mod](go.mod) 声明的 Go **1.27.1**；完整信号测试与实验工具以 Linux 为平台。在仓库根目录构建：
+在 **Linux/WSL** 的仓库根目录运行真实本地演示：
+
+```sh
+go run -mod=readonly ./cmd/demo
+```
+
+需要满足 [go.mod](go.mod) 中 Go **1.27.1** 要求的本地工具链、Bash、OpenSSL 3、Git 和所需 GNU 工具，并提前缓存 Go 依赖；demo 的子命令使用离线构建，不会安装工具或下载缺失依赖。
+
+演示启动真实 Coordinator/Worker 进程，生成隔离的临时开发 PKI，通过 gRPC/mTLS 执行固定 hash 任务，并独立核对 SHA-256 输出与 SQLite 终态。两端均使用 `-disable-zk=true`，无需 Groth16 keys 或私密 witness；成功后回收所属子进程并删除临时文件。操作步骤、失败诊断和恢复测试导读见[本地演示指南](docs/demo.md)。
+
+仅检查构建时，使用：
 
 ```sh
 go build -mod=readonly ./...
 ```
 
-实际运行还需要受信任 CA 与匹配角色、端点的 mTLS 证书、身份允许列表、匹配的 Groth16 proving/verifying keys、Worker 本地 witness 数据和可写的 SQLite 路径。构建不会自动准备这些材料。测试入口与环境要求见[测试执行合同](docs/testing.md)。
+构建检查不会启动演示或准备运行材料。手动以默认 ZK 模式启动服务，仍需受信任 CA 与匹配角色、端点的 mTLS 证书、身份允许列表、匹配的 Groth16 proving/verifying keys、Worker 本地 witness 数据和可写的 SQLite 路径。测试入口与环境要求见[测试执行合同](docs/testing.md)。
 
 ## 范围与限制
 

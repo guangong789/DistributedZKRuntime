@@ -4,11 +4,26 @@
 
 ## Project Introduction
 
-DistributedZKRuntime is a Go distributed job runtime with one Coordinator, multiple Workers, gRPC/mTLS communication, and SQLite-backed job state. Its workload is a Groth16 proof of a MiMC preimage relation on BN254: Workers generate proofs, and the Coordinator independently verifies the results.
+DistributedZKRuntime is a Go distributed job runtime with one Coordinator, multiple Workers, gRPC/mTLS communication, and SQLite-backed job state and full task specifications. The runtime manages execution attempts, retries, leases, stale-result fencing, cancellation, and restart recovery. A Groth16 proof of a MiMC preimage relation on BN254 is a specialized workload: Workers generate proofs, and the Coordinator independently verifies the results.
 
 The project focuses on result acceptance when remote computation outlives a request, a Worker fails, or the Coordinator restarts. The six design decisions below explain how proof verification, attempt identity, and resource lifetimes distinguish an eligible result from an obsolete attempt.
 
 ## Architecture Overview
+
+```mermaid
+flowchart LR
+    client["Client"] -->|"gRPC / mTLS"| coordinator["Coordinator"]
+    coordinator <-->|"gRPC / mTLS"| workers["Workers"]
+    coordinator <--> sqlite["SQLite"]
+    classDef clientRole fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef coordinatorRole fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef workerRole fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef storageRole fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    class client clientRole
+    class coordinator coordinatorRole
+    class workers workerRole
+    class sqlite storageRole
+```
 
 The Client submits jobs synchronously to the Coordinator, which selects live Workers using round robin and manages execution attempts and job state. Workers execute tasks and return results. For successful ZK results, the Coordinator independently verifies the proof and durably saves terminal state to SQLite before returning a response to the Client. The persisted job state also supports recovery after restart.
 
@@ -72,13 +87,23 @@ Each timing is a single observed invocation, not a statistical average or a clai
 
 ## Quick Start
 
-Use Go **1.27.1** as declared in [go.mod](go.mod), with Linux for the full signal tests and experimental tooling. Build from the repository root:
+Run the real local demo from the repository root on **Linux/WSL**:
+
+```sh
+go run -mod=readonly ./cmd/demo
+```
+
+You need a local toolchain meeting the Go **1.27.1** requirement in [go.mod](go.mod), Bash, OpenSSL 3, Git, the required GNU utilities, and cached Go dependencies. The demo's child commands build offline; they do not install tools or download missing dependencies.
+
+The demo starts real Coordinator/Worker processes, generates isolated temporary development PKI, executes a deterministic hash task over gRPC/mTLS, and independently checks the SHA-256 output and SQLite terminal state. Both services use `-disable-zk=true`, so no Groth16 keys or private witness are required. On success, it reaps owned child processes and removes temporary files. See the [local demo guide (Chinese)](docs/demo.md) for operation, failure diagnostics, and the recovery-test walkthrough.
+
+For a build check alone, use:
 
 ```sh
 go build -mod=readonly ./...
 ```
 
-Running services additionally requires a trusted CA and role- and endpoint-matching mTLS certificates, identity allowlists, matching Groth16 proving/verifying keys, Worker-local witness data, and a writable SQLite path. Building does not provision these materials. See the [test execution contract](docs/testing.md) for test entry points and environment requirements.
+A build check neither starts the demo nor provisions runtime materials. Starting services manually in the default ZK mode still requires a trusted CA and role- and endpoint-matching mTLS certificates, identity allowlists, matching Groth16 proving/verifying keys, Worker-local witness data, and a writable SQLite path. See the [test execution contract](docs/testing.md) for test entry points and environment requirements.
 
 ## Scope and Limitations
 
